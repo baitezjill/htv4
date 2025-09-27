@@ -109,6 +109,7 @@ const App = () => {
   const sessionIdRef = useRef<string | null>(null);
   const isSynthRunningRef = useRef(false);
   const sizeMapRef = useRef<Record<string, number>>({});
+  const historyOverlayRef = useRef<HTMLDivElement | null>(null);
   
   // Update refs when state changes
   useEffect(() => {
@@ -883,6 +884,54 @@ ${modelOutputsBlock}`;
     };
   }, [handleOuterScroll, isNearBottom, listRef]);
 
+  // Accessible focus trap for History overlay (Esc to close; tab loop contained)
+  useEffect(() => {
+    if (!isHistoryPanelOpen) return;
+    const root = historyOverlayRef.current;
+    if (!root) return;
+
+    const selectors = 'a[href], button, textarea, input, select, [tabindex]:not([tabindex="-1"])';
+    const getFocusables = (): HTMLElement[] => Array.from(root.querySelectorAll<HTMLElement>(selectors)).filter(el => !el.hasAttribute('disabled'));
+    let focusables = getFocusables();
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+
+    const prevFocused = (document.activeElement as HTMLElement) || null;
+    // Focus the first focusable element (e.g., New Chat button)
+    first?.focus();
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setIsHistoryPanelOpen(false);
+        return;
+      }
+      if (e.key === 'Tab') {
+        focusables = getFocusables();
+        const currentFirst = focusables[0];
+        const currentLast = focusables[focusables.length - 1];
+        if (focusables.length === 0) return;
+        if (e.shiftKey) {
+          if (document.activeElement === currentFirst) {
+            e.preventDefault();
+            currentLast?.focus();
+          }
+        } else {
+          if (document.activeElement === currentLast) {
+            e.preventDefault();
+            currentFirst?.focus();
+          }
+        }
+      }
+    };
+
+    root.addEventListener('keydown', onKeyDown);
+    return () => {
+      root.removeEventListener('keydown', onKeyDown);
+      prevFocused?.focus?.();
+    };
+  }, [isHistoryPanelOpen]);
+
   // Port message handler - streams directly into messages array (hoisted-friendly declaration)
   function createPortMessageHandler() {
     return (message: any) => {
@@ -1437,19 +1486,10 @@ ${modelOutputsBlock}`;
     setSelectedModels(prev => ({ ...prev, [providerId]: !prev[providerId] }));
   };
 
-  const mainContentMarginLeft = isHistoryPanelOpen ? '260px' : '0px';
   const activeProviderCount = LLM_PROVIDERS_CONFIG.filter((p: LLMProvider) => selectedModels[p.id]).length;
 
   return (
-    <div className="sidecar-app-container" style={{ display: 'flex', height: '100vh', overflow: 'hidden', gap: '16px', padding: '0 16px 16px 16px' }}>
-      <HistoryPanel
-        isOpen={isHistoryPanelOpen}
-        sessions={historySessions}
-        isLoading={isHistoryLoading}
-        onNewChat={handleNewChat}
-        onSelectChat={handleSelectChat}
-        onDeleteChat={handleDeleteChat}
-      />
+    <div className="sidecar-app-container" style={{ display: 'flex', height: '100vh', overflow: 'hidden', gap: '0px', padding: '0' }}>
       <div
         className="main-content-wrapper"
         style={{
@@ -1457,10 +1497,7 @@ ${modelOutputsBlock}`;
           display: 'flex',
           flexDirection: 'column',
           height: '100%',
-          marginLeft: mainContentMarginLeft,
-          transition: 'margin-left 0.3s ease',
-          width: isHistoryPanelOpen ? `calc(100% - 260px)` : '100%',
-          padding: '0 20px 16px 20px'
+          padding: '0'
         }}
       >
         <header
@@ -1522,8 +1559,8 @@ ${modelOutputsBlock}`;
           </div>
         </header>
 
-        <main className="chat-area" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <div style={{ flex: 1, overflow: 'hidden', padding: '16px 0' }}>
+        <main className="chat-area" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: '0' }}>
+          <div style={{ flex: 1, overflow: 'hidden', padding: '0' }}>
             {showWelcome && (
               <div
                 className="welcome-state"
@@ -1579,7 +1616,7 @@ ${modelOutputsBlock}`;
             )}
 
             {!showWelcome && (
-              <div ref={outerScrollRef} style={{ height: Math.max(300, window.innerHeight - 220), overflowY: 'hidden', overflowX: 'hidden', padding: '0 4px' }}>
+              <div ref={outerScrollRef} style={{ height: Math.max(300, window.innerHeight - 220), overflowY: 'hidden', overflowX: 'hidden', padding: '0' }}>
               <List
                 ref={listRef}
                 height={Math.max(300, window.innerHeight - 220)}
@@ -1616,6 +1653,48 @@ ${modelOutputsBlock}`;
           isContinuationMode={isContinuationMode}
         />
       </div>
+
+      {isHistoryPanelOpen && (
+        <>
+          <div
+            className="history-backdrop"
+            aria-hidden="true"
+            onClick={() => setIsHistoryPanelOpen(false)}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.4)', backdropFilter: 'blur(2px)', zIndex: 1000 }}
+          />
+          <div
+            ref={historyOverlayRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Chat history"
+            className="history-overlay"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              width: '320px',
+              height: '100vh',
+              background: 'rgba(10, 10, 25, 0.96)',
+              backdropFilter: 'blur(15px)',
+              borderRight: '1px solid rgba(255, 255, 255, 0.1)',
+              zIndex: 1100,
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden'
+            }}
+          >
+            <HistoryPanel
+              isOpen={isHistoryPanelOpen}
+              sessions={historySessions}
+              isLoading={isHistoryLoading}
+              onNewChat={handleNewChat}
+              onSelectChat={handleSelectChat}
+              onDeleteChat={handleDeleteChat}
+            />
+          </div>
+        </>
+      )}
 
       <div
         className="settings-panel"

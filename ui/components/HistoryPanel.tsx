@@ -14,18 +14,16 @@ const HistoryPanel = ({ isOpen, sessions, isLoading, onNewChat, onSelectChat, on
   // NO useEffect, NO useState, NO api calls in this file.
 
   const panelStyle: any = {
-    position: 'sticky',
-    top: 0,
-    width: isOpen ? '260px' : '0px',
+    position: 'relative',
+    width: '100%',
+    height: '100%',
     background: 'rgba(10, 10, 25, 0.9)',
     backdropFilter: 'blur(15px)',
-    borderRight: isOpen ? '1px solid rgba(255, 255, 255, 0.1)' : 'none',
+    borderRight: '1px solid rgba(255, 255, 255, 0.1)',
     color: '#e2e8f0',
-    padding: isOpen ? '20px' : '0px',
+    padding: '20px',
     overflowY: 'auto',
     overflowX: 'hidden',
-    transition: 'width 0.3s ease, padding 0.3s ease',
-    zIndex: 5,
     display: 'flex',
     flexDirection: 'column',
   };

@@ -1,9 +1,5 @@
 import { LLMProvider } from './types';
 
-
-export const AI_THINK_FLAG = 't';
-export const O1_TOOL_NAME = 'a8km123';
-
 export const LLM_PROVIDERS_CONFIG: LLMProvider[] = [
   { id: 'chatgpt', name: 'ChatGPT', color: '#10A37F', logoBgClass: 'bg-green-500', hostnames: ['chat.openai.com','chatgpt.com'] },
   { id: 'claude', name: 'Claude', color: '#FF7F00', logoBgClass: 'bg-orange-500', hostnames: ['claude.ai'] },
