@@ -1,0 +1,998 @@
+// ui/services/persistence.ts
+// Lightweight persistence service for HTOS UI state
+
+// Storage key prefixes for organized data management
+const STORAGE_KEYS = {
+  SCROLL_POSITION: 'htos_scroll_position',
+  APP_STATE: 'htos_app_state',
+  // Legacy keys kept for cleanup
+  TURN_PREFIX: 'htos_turn_',
+  CHAT_LIST: 'htos_chat_list',
+  SESSION_PREFIX: 'htos_session_'
+} as const;
+
+// Interface for scroll position state
+interface ScrollState {
+  position: number;
+  sessionId: string | null;
+  timestamp: number;
+}
+
+// Interface for app state persistence
+interface AppState {
+  currentSessionId: string | null;
+  selectedModels: Record<string, boolean>;
+  isHistoryPanelOpen: boolean;
+  timestamp: number;
+}
+
+/**
+ * Lightweight persistence service for HTOS UI state
+ * Handles scroll position and app state persistence
+ */
+class PersistenceService {
+  private static instance: PersistenceService;
+  private isExtensionContext: boolean;
+  private pendingSaves: Promise<void>[] = [];
+
+  private async storageSet(obj: Record<string, any>): Promise<void> {
+    if (this.isExtensionContext) {
+      await chrome.storage.local.set(obj);
+      return;
+    }
+    try {
+      Object.entries(obj).forEach(([k, v]) => {
+        try { localStorage.setItem(k, JSON.stringify(v)); } catch {}
+      });
+    } catch {}
+  }
+
+  private async storageGet(keys: null | string | string[]): Promise<Record<string, any>> {
+    if (this.isExtensionContext) {
+      // @ts-ignore chrome exists at runtime in extension
+      return await chrome.storage.local.get(keys as any);
+    }
+    const out: Record<string, any> = {};
+    try {
+      if (keys === null) {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i)!;
+          try { out[k] = JSON.parse(localStorage.getItem(k) || 'null'); } catch { out[k] = localStorage.getItem(k); }
+        }
+      } else if (typeof keys === 'string') {
+        try { out[keys] = JSON.parse(localStorage.getItem(keys) || 'null'); } catch { out[keys] = localStorage.getItem(keys); }
+      } else if (Array.isArray(keys)) {
+        keys.forEach(k => {
+          try { out[k] = JSON.parse(localStorage.getItem(k) || 'null'); } catch { out[k] = localStorage.getItem(k); }
+        });
+      }
+    } catch {}
+    return out;
+  }
+
+  private async storageRemove(keys: string | string[]): Promise<void> {
+    if (this.isExtensionContext) {
+      // @ts-ignore chrome exists at runtime in extension
+      await chrome.storage.local.remove(keys as any);
+      return;
+    }
+    const arr = Array.isArray(keys) ? keys : [keys];
+    try { arr.forEach(k => { try { localStorage.removeItem(k); } catch {} }); } catch {}
+  }
+
+  private constructor() {
+    this.isExtensionContext = Boolean(
+      typeof chrome !== 'undefined' &&
+      chrome.storage &&
+      chrome.storage.local
+    );
+  }
+
+  /**
+   * Force flush any pending operations during graceful shutdown
+   * This is a best-effort synchronous operation for browser shutdown
+   */
+  flush(): void {
+    console.log('[PersistenceService] Flush called - ensuring any pending saves complete');
+    
+    // Wait for all pending saves to complete with a reasonable timeout
+    try {
+      // This is a best-effort wait - we can't block shutdown forever
+      Promise.race([
+        Promise.allSettled(this.pendingSaves),
+        new Promise(resolve => setTimeout(resolve, 1000)) // 1 second max wait
+      ]).catch(console.error);
+    } catch (e) {
+      console.error('Error during flush:', e);
+    }
+  }
+
+  public static getInstance(): PersistenceService {
+    if (!PersistenceService.instance) {
+      PersistenceService.instance = new PersistenceService();
+    }
+    return PersistenceService.instance;
+  }
+
+  // =============================================================================
+  // TURN PERSISTENCE (Core functionality)
+  // =============================================================================
+
+  /**
+   * Save a single turn to persistent storage
+   * @param turn The turn message to save
+   */
+  async saveTurn(turn: TurnMessage): Promise<void> {
+    if (!this.isExtensionContext) {
+      console.warn('[Persistence] Not in extension context, skipping turn save');
+      return;
+    }
+
+    const savePromise = (async () => {
+      const key = `${STORAGE_KEYS.TURN_PREFIX}${turn.id}`;
+      const turnData = {
+        ...turn,
+        persistedAt: Date.now()
+      };
+      
+      await this.storageSet({ [key]: turnData });
+      console.debug(`[Persistence] Saved turn ${turn.id} to storage`);
+      
+      // Update session metadata when saving turns
+      await this.updateSessionMetadata(turn);
+    })();
+
+    // Track the save operation
+    this.pendingSaves.push(savePromise);
+    
+    // Clean up the pending save when it completes
+    savePromise
+      .catch(error => console.error('[Persistence] Async save failed:', error))
+      .finally(() => {
+        const index = this.pendingSaves.indexOf(savePromise);
+        if (index > -1) {
+          this.pendingSaves.splice(index, 1);
+        }
+      });
+    
+    // Don't wait for the save to complete
+    return Promise.resolve();
+  }
+
+  /**
+   * Load all turns from storage, sorted by timestamp
+   * @returns Array of turn messages sorted by creation time
+   */
+  async loadAllTurns(): Promise<TurnMessage[]> {
+    if (!this.isExtensionContext) {
+      console.warn('[Persistence] Not in extension context, returning empty turns');
+      return [];
+    }
+
+    try {
+      const result = await this.storageGet(null);
+      const turns: TurnMessage[] = [];
+
+      // Filter and collect all turn entries
+      Object.entries(result).forEach(([key, value]) => {
+        if (key.startsWith(STORAGE_KEYS.TURN_PREFIX) && value && typeof value === 'object') {
+          const turn = value as TurnMessage & { persistedAt?: number };
+          // Remove persistence metadata before returning
+          const { persistedAt, ...cleanTurn } = turn;
+          turns.push(cleanTurn);
+        }
+      });
+
+      // Sort by creation timestamp
+      turns.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+      
+      console.debug(`[Persistence] Loaded ${turns.length} turns from storage`);
+      return turns;
+    } catch (error) {
+      console.error('[Persistence] Failed to load turns:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Load turns for a specific session
+   * @param sessionId The session ID to filter by
+   * @returns Array of turn messages for the session
+   */
+  async loadSessionTurns(sessionId: string): Promise<TurnMessage[]> {
+    const allTurns = await this.loadAllTurns();
+    return allTurns.filter(turn => turn.sessionId === sessionId);
+  }
+
+  /**
+   * Delete a turn by ID
+   * @param turnId The ID of the turn to delete
+   */
+  async deleteTurn(turnId: string): Promise<void> {
+    if (!this.isExtensionContext) {
+      console.warn('[Persistence] Not in extension context, skipping turn deletion');
+      return;
+    }
+
+    try {
+      const key = `${STORAGE_KEYS.TURN_PREFIX}${turnId}`;
+      await this.storageRemove(key);
+      console.debug(`[Persistence] Deleted turn ${turnId} from storage`);
+    } catch (error) {
+      console.error('[Persistence] Failed to delete turn:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete all turns for a specific session
+   * @param sessionId The session ID to clear
+   */
+  async deleteSessionTurns(sessionId: string): Promise<void> {
+    if (!this.isExtensionContext) return;
+
+    try {
+      const result = await this.storageGet(null);
+      const keysToDelete: string[] = [];
+
+      Object.entries(result).forEach(([key, value]) => {
+        if (key.startsWith(STORAGE_KEYS.TURN_PREFIX) && 
+            value && 
+            typeof value === 'object' && 
+            (value as any).sessionId === sessionId) {
+          keysToDelete.push(key);
+        }
+      });
+
+      if (keysToDelete.length > 0) {
+        await this.storageRemove(keysToDelete);
+        console.debug(`[Persistence] Deleted ${keysToDelete.length} turns for session ${sessionId}`);
+      }
+    } catch (error) {
+      console.error('[Persistence] Failed to delete session turns:', error);
+      throw error;
+    }
+  }
+
+  // =============================================================================
+  // SESSION MANAGEMENT (Left panel integration)
+  // =============================================================================
+
+  /**
+   * Generate a chat title from the first user message
+   * @param firstUserMessage The first user message text
+   * @returns Generated title (first 8 words + ellipsis if needed)
+   */
+  private generateChatTitle(firstUserMessage: string): string {
+    if (!firstUserMessage || firstUserMessage.trim().length === 0) {
+      return 'New Chat';
+    }
+
+    const words = firstUserMessage.trim().split(/\s+/);
+    if (words.length <= 8) {
+      return firstUserMessage.trim();
+    }
+    
+    return words.slice(0, 8).join(' ') + '...';
+  }
+
+  /**
+   * Update session metadata when turns are added
+   * @param turn The turn being added
+   */
+  private async updateSessionMetadata(turn: TurnMessage): Promise<void> {
+    if (!turn.sessionId) return;
+
+    try {
+      // Get current chat list
+      const chatList = await this.getChatList();
+      
+      // Find existing session or create new one
+      let sessionMeta = chatList.find(s => s.sessionId === turn.sessionId);
+      
+      if (!sessionMeta) {
+        // Create new session metadata
+        const firstUserMessage = turn.type === 'user' ? (turn.text || '') : '';
+        sessionMeta = {
+          sessionId: turn.sessionId,
+          title: this.generateChatTitle(firstUserMessage),
+          startTime: turn.createdAt || Date.now(),
+          lastActivity: turn.createdAt || Date.now(),
+          turnCount: 1,
+          firstUserMessage
+        };
+        chatList.push(sessionMeta);
+      } else {
+        // Update existing session
+        sessionMeta.lastActivity = turn.createdAt || Date.now();
+        sessionMeta.turnCount += 1;
+        
+        // Update title if this is the first user message and we don't have one
+        if (turn.type === 'user' && !sessionMeta.firstUserMessage) {
+          sessionMeta.firstUserMessage = turn.text || '';
+          sessionMeta.title = this.generateChatTitle(turn.text || '');
+        }
+      }
+
+      // Sort by last activity (most recent first)
+      chatList.sort((a, b) => b.lastActivity - a.lastActivity);
+      
+      // Save updated chat list
+      await this.saveChatList(chatList);
+    } catch (error) {
+      console.error('[Persistence] Failed to update session metadata:', error);
+    }
+  }
+
+  /**
+   * Get the list of chat sessions for the left panel
+   * @returns Array of session metadata
+   */
+  async getChatList(): Promise<SessionMetadata[]> {
+    if (!this.isExtensionContext) return [];
+
+    try {
+      const result = await this.storageGet(STORAGE_KEYS.CHAT_LIST);
+      let list: SessionMetadata[] = (result as any)[STORAGE_KEYS.CHAT_LIST] || [];
+
+      // Auto-rebuild chat list if missing but turns exist (migration/repair)
+      if (!Array.isArray(list) || list.length === 0) {
+        try {
+          // Prefer rebuilding from background session store if available
+          const fromSessions = await this.rebuildChatListFromSessionStore();
+          if (fromSessions.length > 0) {
+            list = fromSessions;
+          } else {
+            list = await this.rebuildChatListFromTurns();
+          }
+        } catch (e) {
+          console.warn('[Persistence] Chat list rebuild failed:', e);
+        }
+      }
+
+      return list;
+    } catch (error) {
+      console.error('[Persistence] Failed to load chat list:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Save the chat list to storage
+   * @param chatList Array of session metadata
+   */
+  private async saveChatList(chatList: SessionMetadata[]): Promise<void> {
+    if (!this.isExtensionContext) return;
+
+    try {
+      await this.storageSet({ [STORAGE_KEYS.CHAT_LIST]: chatList });
+      console.debug(`[Persistence] Saved chat list with ${chatList.length} sessions`);
+    } catch (error) {
+      console.error('[Persistence] Failed to save chat list:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Rebuild chat list metadata from existing persisted turns.
+   * Useful after migrations or when chat list metadata was not saved per-turn.
+   */
+  private async rebuildChatListFromTurns(): Promise<SessionMetadata[]> {
+    const turns = await this.loadAllTurns();
+    if (!turns.length) return [];
+
+    const bySession: Map<string, { startTime: number; lastActivity: number; turnCount: number; firstUserMessage?: string }> = new Map();
+
+    for (const t of turns) {
+      const sid = (t as any).sessionId as string | null;
+      if (!sid) continue;
+      const created: number = Number((t as any).createdAt ?? Date.now());
+      const entry: { startTime: number; lastActivity: number; turnCount: number; firstUserMessage?: string } = bySession.get(sid) || { startTime: created, lastActivity: created, turnCount: 0 };
+      entry.startTime = Math.min(entry.startTime, created);
+      entry.lastActivity = Math.max(entry.lastActivity, created);
+      entry.turnCount += 1;
+      if ((t as any).type === 'user' && !entry.firstUserMessage) {
+        entry.firstUserMessage = (t as any).text || '';
+      }
+      bySession.set(sid, entry);
+    }
+
+    const chatList: SessionMetadata[] = Array.from(bySession.entries()).map(([sessionId, meta]) => ({
+      sessionId,
+      title: this.generateChatTitle(meta.firstUserMessage || 'New Chat'),
+      startTime: meta.startTime,
+      lastActivity: meta.lastActivity,
+      turnCount: meta.turnCount,
+      firstUserMessage: meta.firstUserMessage
+    }));
+
+    // Sort by recency and persist
+    chatList.sort((a, b) => b.lastActivity - a.lastActivity);
+    await this.saveChatList(chatList);
+    console.debug('[Persistence] Rebuilt chat list from turns:', chatList.length);
+    return chatList;
+  }
+
+  /**
+   * Rebuild chat list from the background SessionManager store (htos_sessions and htos_sessions_* keys).
+   */
+  private async rebuildChatListFromSessionStore(): Promise<SessionMetadata[]> {
+    try {
+      const all = await this.storageGet(null);
+      const entries = Object.entries(all || {});
+      if (!entries.length) return [];
+
+      const sessions: Array<any> = [];
+      for (const [key, value] of entries) {
+        if (!key) continue;
+        if (key === 'htos_sessions' && value && typeof value === 'object') {
+          try {
+            Object.values(value as any).forEach((v: any) => sessions.push(v));
+          } catch {}
+        } else if (key.startsWith('htos_sessions_') && value && typeof value === 'object') {
+          sessions.push(value);
+        }
+      }
+
+      if (sessions.length === 0) return [];
+
+      const chatList: SessionMetadata[] = sessions
+        .map((s: any) => {
+          const sessionId = s?.sessionId || null;
+          if (!sessionId) return null;
+          const lastActivity = Number(s?.lastActivity || Date.now());
+          const startTime = (() => {
+            try {
+              const ch = Array.isArray(s?.contextHistory) ? s.contextHistory : [];
+              if (ch.length > 0) {
+                return Number(ch[0]?.timestamp || lastActivity);
+              }
+            } catch {}
+            return Number(lastActivity);
+          })();
+          const firstUserMessage = typeof s?.originalPrompt === 'string' ? s.originalPrompt : '';
+          const turnCount = Array.isArray(s?.contextHistory) ? Math.max(2, s.contextHistory.length) : 2;
+          return {
+            sessionId,
+            title: this.generateChatTitle(firstUserMessage || 'New Chat'),
+            startTime,
+            lastActivity,
+            turnCount,
+            firstUserMessage
+          } as SessionMetadata;
+        })
+        .filter(Boolean) as SessionMetadata[];
+
+      chatList.sort((a, b) => b.lastActivity - a.lastActivity);
+
+      // Save for next time
+      await this.saveChatList(chatList);
+      console.debug('[Persistence] Rebuilt chat list from background sessions:', chatList.length);
+      return chatList;
+    } catch (e) {
+      console.warn('[Persistence] Failed to rebuild from session store:', e);
+      return [];
+    }
+  }
+
+  /**
+   * Delete a session from the chat list and all its turns
+   * @param sessionId The session ID to delete
+   */
+  async deleteSession(sessionId: string): Promise<void> {
+    if (!this.isExtensionContext) return;
+
+    try {
+      // Delete all turns for the session
+      await this.deleteSessionTurns(sessionId);
+      
+      // Remove legacy chat list entirely if present (backend is source of truth)
+      try { await this.storageRemove(STORAGE_KEYS.CHAT_LIST); } catch {}
+
+      // Clear saved scroll position if it belongs to this session
+      try {
+        const result = await this.storageGet(STORAGE_KEYS.SCROLL_POSITION);
+        const scrollState = (result as any)[STORAGE_KEYS.SCROLL_POSITION] as ScrollState;
+        if (scrollState && scrollState.sessionId === sessionId) {
+          await this.storageRemove(STORAGE_KEYS.SCROLL_POSITION);
+          console.debug(`[Persistence] Cleared scroll position for deleted session ${sessionId}`);
+        }
+      } catch (e) {
+        console.warn('[Persistence] Unable to clear scroll state for deleted session', e);
+      }
+
+      // Clear currentSessionId in app state if it references the deleted session
+      try {
+        const stateRes = await chrome.storage.local.get(STORAGE_KEYS.APP_STATE);
+        const appState = stateRes[STORAGE_KEYS.APP_STATE] as AppState | undefined;
+        if (appState && appState.currentSessionId === sessionId) {
+          const updatedState: AppState = { ...appState, currentSessionId: null, timestamp: Date.now() };
+          await chrome.storage.local.set({ [STORAGE_KEYS.APP_STATE]: updatedState });
+          console.debug('[Persistence] Cleared currentSessionId from app state after deletion');
+        }
+      } catch (e) {
+        console.warn('[Persistence] Unable to clear currentSessionId from app state', e);
+      }
+      
+      console.debug(`[Persistence] Deleted session ${sessionId}`);
+    } catch (error) {
+      console.error('[Persistence] Failed to delete session:', error);
+      throw error;
+    }
+  }
+
+  // =============================================================================
+  // SCROLL POSITION MEMORY
+  // =============================================================================
+
+  /**
+   * Save the current scroll position
+   * @param position The scroll position to save
+   * @param sessionId The current session ID
+   */
+  async saveScrollPosition(position: number, sessionId: string | null): Promise<void> {
+    if (!this.isExtensionContext) return;
+
+    try {
+      const scrollState: ScrollState = {
+        position,
+        sessionId,
+        timestamp: Date.now()
+      };
+      
+      await this.storageSet({ [STORAGE_KEYS.SCROLL_POSITION]: scrollState });
+      console.debug(`[Persistence] Saved scroll position ${position} for session ${sessionId}`);
+    } catch (error) {
+      console.error('[Persistence] Failed to save scroll position:', error);
+    }
+  }
+
+  /**
+   * Load the saved scroll position
+   * @returns The saved scroll state or null
+   */
+  async loadScrollPosition(): Promise<ScrollState | null> {
+    if (!this.isExtensionContext) return null;
+
+    try {
+      const result = await this.storageGet(STORAGE_KEYS.SCROLL_POSITION);
+      const scrollState = (result as any)[STORAGE_KEYS.SCROLL_POSITION] as ScrollState;
+      
+      if (scrollState && scrollState.timestamp) {
+        // Only return scroll position if it's recent (within 24 hours)
+        const age = Date.now() - scrollState.timestamp;
+        if (age < 24 * 60 * 60 * 1000) {
+          return scrollState;
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('[Persistence] Failed to load scroll position:', error);
+      return null;
+    }
+  }
+
+  // =============================================================================
+  // APP STATE PERSISTENCE
+  // =============================================================================
+
+  /**
+   * Save the current app state
+   * @param state The app state to save
+   */
+  async saveAppState(state: Partial<AppState>): Promise<void> {
+    if (!this.isExtensionContext) return;
+
+    try {
+      const currentState = await this.loadAppState();
+      const updatedState: AppState = {
+        ...currentState,
+        ...state,
+        timestamp: Date.now()
+      };
+      
+      await this.storageSet({ [STORAGE_KEYS.APP_STATE]: updatedState });
+      console.debug('[Persistence] Saved app state');
+    } catch (error) {
+      console.error('[Persistence] Failed to save app state:', error);
+    }
+  }
+
+  /**
+   * Load the saved app state
+   * @returns The saved app state or default values
+   */
+  async loadAppState(): Promise<AppState> {
+    const defaultState: AppState = {
+      currentSessionId: null,
+      selectedModels: {},
+      isHistoryPanelOpen: false,
+      timestamp: Date.now()
+    };
+
+    if (!this.isExtensionContext) return defaultState;
+
+    try {
+      const result = await this.storageGet(STORAGE_KEYS.APP_STATE);
+      const savedState = (result as any)[STORAGE_KEYS.APP_STATE] as AppState;
+      
+      if (savedState && savedState.timestamp) {
+        // Only return state if it's recent (within 7 days)
+        const age = Date.now() - savedState.timestamp;
+        if (age < 7 * 24 * 60 * 60 * 1000) {
+          return { ...defaultState, ...savedState };
+        }
+      }
+      
+      return defaultState;
+    } catch (error) {
+      console.error('[Persistence] Failed to load app state:', error);
+      return defaultState;
+    }
+  }
+
+  // =============================================================================
+  // UTILITY METHODS
+  // =============================================================================
+
+  /**
+   * Clear all persisted data (for debugging/reset)
+   */
+  async clearAllData(): Promise<void> {
+    if (!this.isExtensionContext) return;
+
+    try {
+      const result = await this.storageGet(null);
+      const keysToDelete: string[] = [];
+
+      Object.keys(result).forEach(key => {
+        if (key.startsWith('htos_')) {
+          keysToDelete.push(key);
+        }
+      });
+
+      if (keysToDelete.length > 0) {
+        await this.storageRemove(keysToDelete);
+        console.debug(`[Persistence] Cleared ${keysToDelete.length} HTOS storage keys`);
+      }
+    } catch (error) {
+      console.error('[Persistence] Failed to clear data:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get storage usage statistics
+   * @returns Object with storage statistics
+   */
+  async getStorageStats(): Promise<{ turnCount: number; sessionCount: number; totalKeys: number }> {
+    if (!this.isExtensionContext) {
+      return { turnCount: 0, sessionCount: 0, totalKeys: 0 };
+    }
+
+    try {
+      const result = await this.storageGet(null);
+      let turnCount = 0;
+      let sessionCount = 0;
+      let totalKeys = 0;
+
+      Object.keys(result).forEach(key => {
+        if (key.startsWith('htos_')) {
+          totalKeys++;
+          if (key.startsWith(STORAGE_KEYS.TURN_PREFIX)) {
+            turnCount++;
+          } else if (key.startsWith(STORAGE_KEYS.SESSION_PREFIX)) {
+            sessionCount++;
+          }
+        }
+      });
+
+      return { turnCount, sessionCount, totalKeys };
+    } catch (error) {
+      console.error('[Persistence] Failed to get storage stats:', error);
+      return { turnCount: 0, sessionCount: 0, totalKeys: 0 };
+    }
+  }
+
+  // =============================================================================
+  // ADDITIONAL HELPERS FOR HISTORY UX
+  // =============================================================================
+
+  /**
+   * Return the most recent sessionId based on lastActivity.
+   */
+  async getMostRecentSessionId(): Promise<string | null> {
+    try {
+      const list = await this.getChatList();
+      if (list && list.length > 0) return list[0].sessionId;
+      return null;
+    } catch (e) {
+      console.warn('[Persistence] getMostRecentSessionId failed:', e);
+      return null;
+    }
+  }
+
+  /**
+   * Basic integrity verification: sort by createdAt, and log if order deviates from expected user->ai pattern.
+   * Returns a sanitized, chronologically ordered list without mutating storage.
+   * @deprecated Use loadVerifiedSessionTurns instead for more robust round-based verification
+   */
+  private verifyTurnsIntegrity(turns: TurnMessage[]): TurnMessage[] {
+    const sorted = [...turns].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+    // Verify ordering consistency and simple pairing expectations
+    let lastType: 'user' | 'ai' | null = null;
+    for (const t of sorted) {
+      if (lastType === 'ai' && t.type === 'ai') {
+        // Multiple AI turns in a row is allowed (continuations), but log for awareness
+        console.debug('[Persistence] Integrity check: consecutive AI turns detected in session', t.sessionId);
+      }
+      lastType = t.type;
+    }
+
+    return sorted;
+  }
+
+  /**
+   * Save a complete conversation round (user turn + AI response) as an atomic operation
+   * @param roundData The complete round data to save
+   */
+  async saveCompleteRound(roundData: CompleteRound): Promise<void> {
+    if (!this.isExtensionContext) {
+      console.warn('[Persistence] Not in extension context, skipping round save');
+      return;
+    }
+
+    const savePromise = (async () => {
+      const nowTs = Date.now();
+      const roundId = roundData.roundId;
+      const userTurn = { ...roundData.userTurn, persistedAt: nowTs, roundId } as any;
+      const aiTurn = {
+        ...(roundData.aiTurn as any),
+        createdAt: Math.max(roundData.aiTurn.createdAt, roundData.userTurn.createdAt + 1),
+        persistedAt: nowTs,
+        roundId
+      } as any;
+
+      const saveData = {
+        [`${STORAGE_KEYS.TURN_PREFIX}${userTurn.id}`]: userTurn,
+        [`${STORAGE_KEYS.TURN_PREFIX}${aiTurn.id}`]: aiTurn
+      };
+
+      await this.storageSet(saveData);
+      console.debug(`[Persistence] Saved complete round: ${roundData.roundId}`);
+      
+      await this.updateSessionMetadataForRound(roundData);
+    })();
+
+    // Track the save operation
+    this.pendingSaves.push(savePromise);
+    
+    // Clean up the pending save when it completes
+    savePromise
+      .catch(error => console.error('[Persistence] Async save failed:', error))
+      .finally(() => {
+        const index = this.pendingSaves.indexOf(savePromise);
+        if (index > -1) {
+          this.pendingSaves.splice(index, 1);
+        }
+      });
+    
+    // Don't wait for the save to complete
+    return Promise.resolve();
+  }
+
+  /**
+   * Update session metadata when a complete round is saved
+   * @private
+   */
+  private async updateSessionMetadataForRound(roundData: CompleteRound): Promise<void> {
+    const sessionId = roundData.userTurn.sessionId;
+    if (!sessionId) return;
+
+    try {
+      const chatList = await this.getChatList();
+      let sessionMeta = chatList.find(s => s.sessionId === sessionId);
+      
+      if (!sessionMeta) {
+        sessionMeta = {
+          sessionId,
+          title: this.generateChatTitle(roundData.userTurn.text || ''),
+          startTime: roundData.userTurn.createdAt || Date.now(),
+          lastActivity: roundData.completedAt,
+          turnCount: 2, // Both user and AI turns
+          firstUserMessage: roundData.userTurn.text || ''
+        };
+        chatList.push(sessionMeta);
+      } else {
+        sessionMeta.lastActivity = roundData.completedAt;
+        sessionMeta.turnCount = (sessionMeta.turnCount || 0) + 2; // Increment by 2 for user+AI
+      }
+
+      // Sort by last activity (most recent first)
+      chatList.sort((a, b) => b.lastActivity - a.lastActivity);
+      await this.saveChatList(chatList);
+      // Emit a storage change for listeners when not in extension context
+      if (!this.isExtensionContext) {
+        try { window.dispatchEvent(new StorageEvent('storage', { key: STORAGE_KEYS.CHAT_LIST } as any)); } catch {}
+      }
+    } catch (error) {
+      console.error('[Persistence] Failed to update session metadata for round:', error);
+    }
+  }
+
+  /**
+   * Load and verify a session's turns, ensuring they form complete rounds where possible.
+   * This is a more robust version that understands the concept of conversation rounds.
+   */
+  async loadVerifiedSessionTurns(sessionId: string): Promise<TurnMessage[]> {
+    const turns = await this.loadSessionTurns(sessionId);
+    if (!turns || turns.length === 0) {
+      // Fallback: reconstruct minimal turns from background session store
+      try {
+        const reconstructed = await this.loadTurnsFromSessionStore(sessionId);
+        if (reconstructed.length > 0) {
+          console.debug('[Persistence] Loaded turns from session store fallback:', reconstructed.length);
+          return reconstructed;
+        }
+      } catch (e) {
+        console.warn('[Persistence] Session store fallback failed:', e);
+      }
+      return [];
+    }
+
+    const rounds = new Map<string, { user?: UserTurn; ai?: AiTurn }>();
+    const orphanedTurns: TurnMessage[] = [];
+
+    // First pass: group turns by a common round identifier derived from their IDs
+    for (const turn of turns) {
+      const explicitRound = (turn as any).roundId as string | undefined;
+      const roundKey = explicitRound || turn.id.replace('user-', '').replace('ai-', '');
+      if (!rounds.has(roundKey)) {
+        rounds.set(roundKey, {});
+      }
+      const round = rounds.get(roundKey)!;
+      if (turn.type === 'user') round.user = turn as UserTurn;
+      if (turn.type === 'ai') round.ai = turn as AiTurn;
+    }
+
+    const sortedRoundKeys = Array.from(rounds.keys()).sort((a, b) => a.localeCompare(b));
+    const finalTurns: TurnMessage[] = [];
+
+    // Second pass: reconstruct the chat history in chronological order
+    for (const key of sortedRoundKeys) {
+      const round = rounds.get(key)!;
+      if (round.user) {
+        finalTurns.push(round.user);
+      } else if (round.ai) {
+        // AI turn without a user turn is orphaned
+        orphanedTurns.push(round.ai);
+      }
+
+      if (round.ai) {
+        finalTurns.push(round.ai);
+      } else if (round.user) {
+        // User turn without an AI turn is orphaned (likely in progress when closed)
+        orphanedTurns.push(round.user);
+      }
+    }
+
+    // Append any truly orphaned turns that couldn't be paired
+    finalTurns.push(...orphanedTurns.filter(t => !finalTurns.some(ft => ft.id === t.id)));
+    
+    // Final sort as a fallback to ensure chronology
+    finalTurns.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+    console.debug(`[Persistence] Loaded ${rounds.size} potential rounds`);
+    return finalTurns;
+  }
+
+  /**
+   * Fallback reconstruction of turns using the background session store data.
+   * Produces a single user + AI turn snapshot so history isn't empty for legacy sessions.
+   */
+  private async loadTurnsFromSessionStore(sessionId: string): Promise<TurnMessage[]> {
+    const all = await this.storageGet([`htos_sessions_${sessionId}`, 'htos_sessions']);
+    const direct = (all as any)[`htos_sessions_${sessionId}`];
+    const aggregate = (all as any)['htos_sessions'];
+    const session = direct || (aggregate && aggregate[sessionId]);
+    if (!session) return [];
+
+    // Prefer full round transcripts if available
+    const rounds = Array.isArray(session?.turns) ? session.turns : [];
+    if (rounds.length > 0) {
+      const turns: TurnMessage[] = [];
+      rounds.forEach((r: any) => {
+        const baseTs = Number(r?.createdAt || Date.now());
+        // User turn from the round
+        if (r?.user && typeof r.user.text === 'string') {
+          turns.push({
+            type: 'user',
+            id: `user-${baseTs}`,
+            text: String(r.user.text),
+            createdAt: Number(r.user.createdAt || baseTs),
+            sessionId
+          } as any);
+        }
+        // AI turn aggregating providers from the round
+        const providerResponses: Record<string, any> = {};
+        try {
+          Object.entries(r?.providers || {}).forEach(([pid, data]: any) => {
+            providerResponses[String(pid)] = {
+              providerId: String(pid),
+              text: String((data && data.text) || ''),
+              status: 'completed',
+              meta: (data && data.meta) || {},
+              createdAt: Number(r?.completedAt || baseTs + 1),
+              updatedAt: Number(r?.completedAt || baseTs + 1)
+            };
+          });
+        } catch {}
+        turns.push({
+          type: 'ai',
+          id: `ai-${baseTs + 1}`,
+          createdAt: Number(r?.completedAt || baseTs + 1),
+          sessionId,
+          providerResponses
+        } as any);
+      });
+      return turns;
+    }
+
+    // Legacy minimal reconstruction
+    const createdBase: number = Number(session?.contextHistory?.[0]?.timestamp || session?.lastActivity || Date.now());
+    const userTurn: any = {
+      type: 'user',
+      id: `user-${createdBase}`,
+      text: String(session?.originalPrompt || ''),
+      createdAt: createdBase,
+      sessionId
+    };
+    const providerResponses: Record<string, any> = {};
+    try {
+      const providers = session?.providers || {};
+      Object.entries(providers).forEach(([pid, data]: any) => {
+        providerResponses[String(pid)] = {
+          providerId: String(pid),
+          text: String((data && data.text) || ''),
+          status: 'completed',
+          meta: (data && data.meta) || {},
+          createdAt: Number(session?.lastActivity || Date.now()),
+          updatedAt: Number(session?.lastActivity || Date.now())
+        };
+      });
+    } catch {}
+    const aiTurn: any = {
+      type: 'ai',
+      id: `ai-${createdBase + 1}`,
+      createdAt: createdBase + 1,
+      sessionId,
+      providerResponses
+    };
+    return [userTurn as TurnMessage, aiTurn as TurnMessage];
+  }
+
+  // Public: legacy cleanup for UI-side chat list and per-turn keys
+  async clearLegacyHistory(): Promise<void> {
+    if (!this.isExtensionContext) return;
+    try {
+      const all = await this.storageGet(null);
+      const keysToDelete: string[] = [];
+      Object.keys(all || {}).forEach((k) => {
+        if (k === STORAGE_KEYS.CHAT_LIST) keysToDelete.push(k);
+        if (k.startsWith(STORAGE_KEYS.TURN_PREFIX)) keysToDelete.push(k);
+      });
+      if (keysToDelete.length) {
+        await this.storageRemove(keysToDelete);
+        console.debug('[Persistence] Cleared legacy history keys:', keysToDelete.length);
+      }
+    } catch (e) {
+      console.warn('[Persistence] clearLegacyHistory failed', e);
+    }
+  }
+}
+
+// Export singleton instance
+export const persistenceService = PersistenceService.getInstance();
+export default persistenceService;
