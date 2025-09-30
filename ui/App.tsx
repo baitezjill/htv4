@@ -13,6 +13,7 @@ import { MenuIcon } from './components/Icons';
 import api from './services/extension-api';
 import persistenceService from './services/persistence';
 import { useDelegatedScroll } from './hooks/useDelegatedScroll';
+import Banner from './components/Banner';
 
 // Hoisted helper: Build the Ensembler prompt using provided fixed template from spec
 function buildEnsemblerPrompt(userPrompt: string, modelOutputs: Record<string, string>): string {
@@ -87,6 +88,8 @@ const App = () => {
   const [isInitializing, setIsInitializing] = useState(true);
   const [expandedUserTurns, setExpandedUserTurns] = useState<Record<string, boolean>>({});
   const [isReducedMotion, setIsReducedMotion] = useState(false);
+  // Ephemeral banner for SW notices (e.g., Grok login prompt)
+  const [bannerText, setBannerText] = useState<string | null>(null);
   // Round-level action bar selections
   const [synthSelectionsByRound, setSynthSelectionsByRound] = useState<Record<string, Record<string, boolean>>>({});
   const [ensembleSelectionByRound, setEnsembleSelectionByRound] = useState<Record<string, string | null>>({});
@@ -116,6 +119,18 @@ const App = () => {
     sessionIdRef.current = currentSessionId;
   }, [currentSessionId]);
 
+  // Listen for background SHOW_BANNER notices (e.g., Grok cookie)
+  useEffect(() => {
+    const handler = (message: any) => {
+      try {
+        if (message?.type === 'SHOW_BANNER') {
+          setBannerText(message?.message || 'Please open grok.com once to log in');
+        }
+      } catch {}
+    };
+    try { chrome.runtime?.onMessage?.addListener(handler); } catch {}
+    return () => { try { chrome.runtime?.onMessage?.removeListener(handler); } catch {} };
+  }, []);
 
   // ============================================================================
   // Graceful shutdown handler
@@ -1490,6 +1505,16 @@ ${modelOutputsBlock}`;
 
   return (
     <div className="sidecar-app-container" style={{ display: 'flex', height: '100vh', overflow: 'hidden', gap: '0px', padding: '0' }}>
+      {/* Global ephemeral banner */}
+      {bannerText && (
+        <Banner
+          text={bannerText}
+          onClose={() => setBannerText(null)}
+          onOpen={() => {
+            try { window.open('https://grok.com', '_blank', 'noopener,noreferrer'); } catch {}
+          }}
+        />
+      )}
       <div
         className="main-content-wrapper"
         style={{

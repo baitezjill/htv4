@@ -15,7 +15,7 @@
     "https://*/*",
     "http://localhost:3000/*",
     "https://x.com/*",
-"https://grok.com/*"
+"https://grok.com/*",
         "https://grok.x.com/*"
   ],
 
