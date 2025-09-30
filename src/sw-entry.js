@@ -12,6 +12,8 @@ import { SWBootstrap } from "./HTOS/ServiceWorkerBootstrap.js";
 import { ClaudeAdapter } from "./providers/claude-adapter.js";
 import { GeminiAdapter } from "./providers/gemini-adapter.js";
 import { ChatGPTAdapter } from "./providers/chatgpt-adapter.js";
+import { GrokAdapter } from "./providers/grok-adapter.js";
+import { GrokProviderController } from "./providers/grok.js";
 import { ClaudeProviderController } from "./providers/claude.js";
 import { GeminiProviderController } from "./providers/gemini.js";
 import { ChatGPTProviderController } from "./providers/chatgpt.js";
@@ -1028,11 +1030,37 @@ chrome.runtime.onConnect.addListener((port) => {
         const capturedSessionId = sessionId || `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         console.log('[HTOS] Using capturedSessionId for sendPrompt:', capturedSessionId);
 
-        // Ensure session state exists before starting the fanout so callbacks
-        // can immediately merge contexts and logs have a target session.
+        // Soft-timeout support: don't abort background work on UI timeout.
+        // Track per-session timeout timer and completed providers so we can
+        // notify UI and persist late results for popup reconnection.
+        self._sessionTimeoutTimers = self._sessionTimeoutTimers || new Map();
+        self._timedOutSessions = self._timedOutSessions || new Set();
+        const timeoutTimers = self._sessionTimeoutTimers;
+        const timedOutSessions = self._timedOutSessions;
+        const completedProviders = new Set();
+        const timeoutMs = (self.orchestrator && self.orchestrator.opts && self.orchestrator.opts.globalTimeoutMs) ? self.orchestrator.opts.globalTimeoutMs : 45000;
+
+        // Start a soft UI timeout: after timeoutMs, tell UI to stop streaming but keep background work alive
         try {
+          const t = setTimeout(() => {
+            try {
+              timedOutSessions.add(capturedSessionId);
+              const pending = availableProviders.filter(p => !completedProviders.has(p));
+              port.postMessage({
+                type: 'timed_out',
+                sessionId: capturedSessionId,
+                message: 'Request timed out (UI-level). Background providers may complete later.',
+                pendingProviders: pending
+              });
+            } catch (e) {
+              console.warn('[HTOS] Failed to emit timed_out message to port', e);
+            }
+            // Persist current session state so popup reconnect can reconcile
+            try { sessionManager.saveSession(capturedSessionId).catch(()=>{}); } catch(e){}
+          }, timeoutMs);
+          timeoutTimers.set(capturedSessionId, t);
         } catch (e) {
-          console.warn('[HTOS] Failed to create session before fanout', e);
+          console.warn('[HTOS] Failed to start soft timeout timer', e);
         }
 
         const roundId = sessionManager.beginRound(capturedSessionId, String(prompt || ""));
@@ -1044,6 +1072,13 @@ chrome.runtime.onConnect.addListener((port) => {
             useThinking: Boolean(useThinking),
              onAllComplete: (resultsMap, errorsMap) => {
                try {
+                 // Clear soft-timeout timer if present
+                 try {
+                   const t = timeoutTimers.get(capturedSessionId);
+                   if (t) { clearTimeout(t); timeoutTimers.delete(capturedSessionId); }
+                   timedOutSessions.delete(capturedSessionId);
+                 } catch (e) {}
+ 
                  // Mark round completion (don't save yet, will be handled by the final save)
                  try { sessionManager.completeRound(capturedSessionId, roundId, { skipSave: true }); } catch {}
                  const stepResults = Array.from(resultsMap.entries()).map(([providerId, res]) => ({
@@ -1092,15 +1127,29 @@ chrome.runtime.onConnect.addListener((port) => {
              },
              onProviderComplete: (providerId, result) => {
                console.log(`[HTOS] Provider ${providerId} completed`);
-               
+                
                // Instrument and then update session context with result for future continuations
                try { console.log(`[HTOS] onProviderComplete session=${capturedSessionId} provider=${providerId} resultLen=${(result?.text||'').length}`); } catch {}
                if (result && capturedSessionId) {
-                 sessionManager.updateProviderContext(capturedSessionId, providerId, result, true, { skipSave: true });
-                 // Also persist into the current round transcript
-                 try { sessionManager.updateRoundProvider(capturedSessionId, roundId, providerId, result, { skipSave: true }); } catch {}
+                 // Mark provider as completed for timeout/pending calculations
+                 try { completedProviders.add(providerId); } catch {}
+ 
+                 // If the UI already timed out for this session, persist per-provider results immediately
+                 const saveNow = timedOutSessions.has(capturedSessionId);
+                 try {
+                   sessionManager.updateProviderContext(capturedSessionId, providerId, result, true, { skipSave: !saveNow });
+                 } catch (e) {
+                   console.warn('[HTOS] updateProviderContext failed', e);
+                 }
+                 // Also persist into the current round transcript; save if timed out
+                 try { sessionManager.updateRoundProvider(capturedSessionId, roundId, providerId, result, { skipSave: !saveNow }); } catch (e) { console.warn('[HTOS] updateRoundProvider failed', e); }
+ 
+                 // If we saved now because UI timed out (and maybe disconnected), ensure session persisted so popup can reconcile
+                 if (saveNow) {
+                   try { sessionManager.saveSession(capturedSessionId).catch(()=>{}); } catch(e){}
+                 }
                }
-               
+                
                port.postMessage({
                  type: "result",
                  providerId,
@@ -1636,13 +1685,10 @@ async function initializeGlobalInfrastructure() {
     if (chrome.alarms) {
       
       // Ensure NetRulesManager is properly initialized before calling register
-      if (typeof NetRulesManager !== 'undefined' && typeof NetRulesManager.init === 'function') {
-        try {
-          await NetRulesManager.init();
-          console.log("[HTOS] ✓ NetRulesManager initialized");
-        } catch (initErr) {
-          console.error('[HTOS] NetRulesManager.init() failed', initErr);
-        }
+      if (NetRulesManager && typeof NetRulesManager.init === 'function') {
+        // Simplified: call init directly. Let errors propagate to the outer init flow
+        await NetRulesManager.init();
+        console.log("[HTOS] ✓ NetRulesManager initialized");
       } else {
         console.warn('[HTOS] NetRulesManager not available or missing init()');
       }
@@ -1712,10 +1758,11 @@ async function initializeGlobalInfrastructure() {
 async function initializeProviders() {
   console.log("[HTOS] Starting provider initialization...");
   
-  const providerConfigs = [
+const providerConfigs = [
     { name: 'claude', Controller: ClaudeProviderController, Adapter: ClaudeAdapter },
     { name: 'gemini', Controller: GeminiProviderController, Adapter: GeminiAdapter },
     { name: 'chatgpt', Controller: ChatGPTProviderController, Adapter: ChatGPTAdapter },
+    { name: 'grok', Controller: GrokProviderController, Adapter: GrokAdapter },
   ];
 
   const initializedProviders = [];
@@ -2066,8 +2113,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
               sessionId,
               payload: { phase: "continuation", error: "No available providers" },
             });
-            return;
-          }
+          return;
+        }
 
           // Build per-provider continuation meta from session store
           const providerMeta = availableProviders.reduce((acc, pid) => {
@@ -2077,6 +2124,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             } else if (pid === 'gemini' && stored.cursor) {
               acc[pid] = { cursor: stored.cursor };
             } else if (pid === 'chatgpt' && (stored.conversationId || stored.parentMessageId)) {
+              acc[pid] = {
+                conversationId: stored.conversationId,
+                parentMessageId: stored.parentMessageId,
+                messageId: stored.messageId,
+              };
+            } else if (pid === 'grok' && (stored.conversationId || stored.responseId)) {
+              acc[pid] = {
+                conversationId: stored.conversationId,
+                responseId: stored.responseId,
+              };
               acc[pid] = {
                 conversationId: stored.conversationId,
                 parentMessageId: stored.parentMessageId,
@@ -2118,7 +2175,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             for (const r of res?.raw || []) {
               try {
                 sessionManager.updateProviderContext(sessionId, r.providerId, r, true, { skipSave: true });
-              } catch (e) {
+      } catch (e) {
                 // Fallback to direct assign if manager fails for any reason
                 session.providers[r.providerId] = { text: r?.text || "", meta: r?.meta || {} };
               }
@@ -2662,6 +2719,7 @@ class SystemHealthMonitor {
     return {
       ...this.metrics,
       uptime: Date.now() - this.metrics.startTime,
+
       providerStats: Object.fromEntries(this.metrics.providerStats)
     };
   }

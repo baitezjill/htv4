@@ -1,7 +1,7 @@
 import type { LLMProvider } from '../types';
 
 // Provider icons are light-weight and color-driven via tokens to remain dark-mode safe
-import { ChatGPTIcon, ClaudeIcon, GeminiIcon } from './providerIcons';
+import { ChatGPTIcon, ClaudeIcon, GeminiIcon, GrokIcon } from './providerIcons';
 
 // Central registry for provider metadata used by the UI (lanes/rail)
 // - Do NOT hard-code hex colors inside Rail; colors live here (or in tokens)
@@ -17,6 +17,7 @@ export const INITIAL_PROVIDERS: ProviderConfig[] = [
   { id: 'chatgpt', name: 'ChatGPT', color: '#10A37F', logoBgClass: 'bg-green-500', hostnames: ['chat.openai.com','chatgpt.com'], icon: ChatGPTIcon },
   { id: 'claude',  name: 'Claude',  color: '#FF7F00', logoBgClass: 'bg-orange-500', hostnames: ['claude.ai'],                   icon: ClaudeIcon },
   { id: 'gemini',  name: 'Gemini',  color: '#4285F4', logoBgClass: 'bg-blue-500',   hostnames: ['gemini.google.com'],           icon: GeminiIcon },
+  { id: 'grok',    name: 'Grok',    color: '#9d71ff', logoBgClass: 'bg-purple-500', hostnames: ['grok.com'],                    icon: GrokIcon },
 ];
 
 // Mutable list used by the LaneFactory/Rail

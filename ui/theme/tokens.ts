@@ -11,8 +11,8 @@ export const tokens = {
     cardShadow: '0 1px 2px rgba(0,0,0,0.25)'
   },
   status: {
-    streaming: '#10b981', // matches existing success green
-    unread: '#f59e0b',    // matches existing amber
+    streaming: '#10b981',
+    unread: '#f59e0b',
     error: '#ef4444'
   },
   text: {
@@ -21,6 +21,7 @@ export const tokens = {
   accents: {
     chatgpt: '#10A37F',
     claude: '#FF7F00',
-    gemini: '#4285F4'
+    gemini: '#4285F4',
+    grok: '#9d71ff'
   }
 } as const;
