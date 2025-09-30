@@ -1723,6 +1723,25 @@ async function initializeGlobalInfrastructure() {
       } catch (e) {
         console.warn('[HTOS] Failed to register local offscreen oi DNR rule', e);
       }
+
+      // Force Grok requests to carry same-origin-like headers
+      try {
+        await NetRulesManager.register({
+          key: 'grok-same-origin',
+          condition: { urlFilter: 'https://grok.com/rest/app-chat/*' },
+          action: {
+            type: 'modifyHeaders',
+            requestHeaders: [
+              { header: 'referer',        operation: 'set', value: 'https://grok.com/' },
+              { header: 'sec-fetch-site', operation: 'set', value: 'same-origin' },
+              { header: 'sec-fetch-mode', operation: 'set', value: 'cors' }
+            ]
+          }
+        });
+        console.log('[HTOS] ✓ DNR: grok same-origin header rules applied');
+      } catch (e) {
+        console.warn('[HTOS] Failed to register grok same-origin DNR rule', e);
+      }
     } else {
       console.warn("[HTOS] chrome.alarms API not available, skipping dependent initializations");
     }
