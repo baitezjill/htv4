@@ -1,9 +1,9 @@
 import { LLMProvider } from './types';
 
+import { INITIAL_PROVIDERS } from './providers/providerRegistry';
+
 export const LLM_PROVIDERS_CONFIG: LLMProvider[] = [
-  { id: 'chatgpt', name: 'ChatGPT', color: '#10A37F', logoBgClass: 'bg-green-500', hostnames: ['chat.openai.com','chatgpt.com'] },
-  { id: 'claude', name: 'Claude', color: '#FF7F00', logoBgClass: 'bg-orange-500', hostnames: ['claude.ai'] },
-  { id: 'gemini', name: 'Gemini', color: '#4285F4', logoBgClass: 'bg-blue-500', hostnames: ['gemini.google.com'] },
+  ...INITIAL_PROVIDERS
 ];
 
 export const SIMULATION_CHUNK_DELAY_MS = 70;

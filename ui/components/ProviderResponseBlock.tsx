@@ -1,6 +1,10 @@
 import { LLMProvider, AppStep, ProviderResponse } from '../types';
 import { LLM_PROVIDERS_CONFIG } from '../constants';
 import { BotIcon, ChevronDownIcon, ChevronUpIcon } from './Icons';
+import { LaneFactory } from './lanes/LaneFactory';
+import { Rail } from './lanes/Rail';
+import { useLaneRailState } from './lanes/useLaneRailState';
+import { getProviderById } from '../providers/providerRegistry';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { ProviderPill } from './ProviderPill';
 
@@ -233,178 +237,176 @@ const ProviderResponseBlock = ({
           </div>
         </div>
 
-        {/* Provider Blocks Grid */}
-        <div className="providers-layer" style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-          gap: '12px',
-          marginBottom: '16px'
-        }}>
-          {Object.entries(filteredProviderStates).map(([providerId, state]) => {
-            const provider = getProviderConfig(providerId);
-            const isExpanded = expandedProviders[providerId];
-            const isStreaming = state.status === 'streaming';
+        {/* Provider Blocks Grid with 3 + rail behavior */}
+        {(() => {
+          const presentProviderIds = Object.keys(filteredProviderStates);
+          // Order by global config order for stable UX
+          const orderedIds = LLM_PROVIDERS_CONFIG
+            .map(p => p.id)
+            .filter(id => presentProviderIds.includes(id));
 
-            const transitionStyle = isReducedMotion ? {} : {
-              transition: 'max-height 0.3s ease, background 0.2s ease'
-            };
-
+          const count = orderedIds.length;
+          if (count <= 3) {
+            // Preserve today's look & feel exactly
             return (
-              <div 
-                key={providerId} 
-                className={`provider-block ${isExpanded ? 'expanded' : ''}`}
-                style={{
-                  position: 'relative',
-                  background: '#1e293b',
-                  border: '1px solid #334155',
-                  borderRadius: '12px',
-                  padding: '16px',
-                  minHeight: blockMinHeight,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  ...transitionStyle,
-                  ...(isExpanded && { background: '#293548' })
-                }}
+              <div className="providers-layer" style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+                gap: '12px',
+                marginBottom: '16px',
+                position: 'relative'
+              }}>
+                {orderedIds.map((providerId) => {
+                  const state = (effectiveProviderStates as any)[providerId];
+                  const provider = getProviderConfig(providerId);
+                  const isExpanded = expandedProviders[providerId];
+                  const isStreaming = state?.status === 'streaming';
+                  const transitionStyle = isReducedMotion ? {} : { transition: 'max-height 0.3s ease, background 0.2s ease' };
+
+                  return (
+                    <div key={providerId} className={`provider-block ${isExpanded ? 'expanded' : ''}`}
+                      style={{
+                        position: 'relative',
+                        background: '#1e293b',
+                        border: '1px solid #334155',
+                        borderRadius: '12px',
+                        padding: '16px',
+                        minHeight: blockMinHeight,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        ...transitionStyle,
+                        ...(isExpanded && { background: '#293548' })
+                      }}
+                      aria-live="polite"
+                    >
+                      {/* Provider Header */}
+                      <div className="provider-header" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexShrink: 0 }}>
+                        {provider && (
+                          <div className={`model-logo ${provider.logoBgClass}`} style={{ width: '16px', height: '16px', borderRadius: '3px' }} />
+                        )}
+                        <div className="model-name" style={{ fontWeight: 500, fontSize: '12px', color: '#94a3b8' }}>
+                          {provider?.name || providerId}
+                        </div>
+                        <div className="status-indicator" style={{ marginLeft: 'auto', width: '8px', height: '8px', borderRadius: '50%', background: getStatusColor(state?.status), ...(isStreaming && { animation: 'pulse 1.5s ease-in-out infinite' }) }} />
+                      </div>
+
+                      {/* Per-Provider Controls */}
+                      <div className="provider-controls" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexShrink: 0 }}>
+                        <button
+                          onClick={() => toggleExpanded(providerId)}
+                          aria-expanded={isExpanded}
+                          aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${provider?.name || providerId} response`}
+                          style={{
+                            background: '#334155', border: '1px solid #475569', borderRadius: '6px', padding: '4px 8px', color: '#94a3b8', fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px'
+                          }}
+                        >
+                          {isExpanded ? <ChevronUpIcon style={{ width: '12px', height: '12px' }} /> : <ChevronDownIcon style={{ width: '12px', height: '12px' }} />}
+                          {isExpanded ? 'Collapse' : 'Expand'}
+                        </button>
+                      </div>
+
+                      {/* Content Area */}
+                      <div className="provider-content" style={{ flex: 1, cursor: isExpanded ? 'default' : 'pointer', overflow: 'hidden', display: 'flex', flexDirection: 'column' }} onClick={!isExpanded ? () => toggleExpanded(providerId) : undefined}>
+                        {/* Collapsed Gist */}
+                        {!isExpanded && (
+                          <div style={{ fontSize: '13px', lineHeight: '1.5', color: '#e2e8f0', whiteSpace: 'pre-wrap', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textOverflow: 'ellipsis', height: 'calc(1.5em * 2)' }}>
+                            {state?.text || getStatusText(state?.status)}
+                            {isStreaming && !state?.text && <span className="streaming-dots" />}
+                          </div>
+                        )}
+                        {/* Expanded Full */}
+                        {isExpanded && (
+                          <div data-provider-chat style={{ fontSize: '13px', lineHeight: '1.5', color: '#e2e8f0', whiteSpace: 'pre-wrap', maxHeight: '60vh', overflowY: 'auto', padding: '12px', background: 'rgba(0, 0, 0, 0.2)', borderRadius: '8px', flex: 1 }}>
+                            {state?.text || getStatusText(state?.status)}
+                            {isStreaming && <span className="streaming-dots" />}
+                          </div>
+                        )}
+                        {/* Footer */}
+                        <div style={{ marginTop: 'auto', display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                          <CopyButton text={state?.text} label={`Copy ${provider?.name || providerId} response`} />
+                          <ProviderPill id={providerId as any} />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          }
+
+          // 3 + Rail case
+          const { mainIds, railIds, swapInFromRail } = useLaneRailState(orderedIds, 3);
+          const position: 'left' | 'right' = 'left'; // default to left as requested
+
+          const renderProviderCard = (providerId: string) => {
+            const state = (effectiveProviderStates as any)[providerId];
+            const provider = getProviderConfig(providerId);
+            const isExpanded = !!expandedProviders[providerId];
+            const isStreaming = state?.status === 'streaming';
+            const transitionStyle = isReducedMotion ? {} : { transition: 'max-height 0.3s ease, background 0.2s ease' };
+            return (
+              <div key={providerId} className={`provider-block ${isExpanded ? 'expanded' : ''}`}
+                style={{ position: 'relative', background: '#1e293b', border: '1px solid #334155', borderRadius: '12px', padding: '16px', minHeight: blockMinHeight, display: 'flex', flexDirection: 'column', ...transitionStyle, ...(isExpanded && { background: '#293548' }) }}
                 aria-live="polite"
               >
-                {/* Provider Header */}
-                <div className="provider-header" style={{ 
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  gap: '8px', 
-                  marginBottom: '12px',
-                  flexShrink: 0
-                }}>
-                  {provider && (
-                    <div 
-                      className={`model-logo ${provider.logoBgClass}`} 
-                      style={{ width: '16px', height: '16px', borderRadius: '3px' }}
-                    />
-                  )}
-                  <div className="model-name" style={{ 
-                    fontWeight: 500, 
-                    fontSize: '12px', 
-                    color: '#94a3b8' 
-                  }}>
-                    {provider?.name || providerId}
-                  </div>
-                  <div className="status-indicator" style={{
-                    marginLeft: 'auto',
-                    width: '8px',
-                    height: '8px',
-                    borderRadius: '50%',
-                    background: getStatusColor(state.status),
-                    ...(isStreaming && { animation: 'pulse 1.5s ease-in-out infinite' })
-                  }}></div>
+                <div className="provider-header" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexShrink: 0 }}>
+                  {provider && (<div className={`model-logo ${provider.logoBgClass}`} style={{ width: '16px', height: '16px', borderRadius: '3px' }} />)}
+                  <div className="model-name" style={{ fontWeight: 500, fontSize: '12px', color: '#94a3b8' }}>{provider?.name || providerId}</div>
+                  <div className="status-indicator" style={{ marginLeft: 'auto', width: '8px', height: '8px', borderRadius: '50%', background: getStatusColor(state?.status), ...(isStreaming && { animation: 'pulse 1.5s ease-in-out infinite' }) }} />
                 </div>
-
-                {/* Per-Provider Controls */}
-                <div className="provider-controls" style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  marginBottom: '12px',
-                  flexShrink: 0
-                }}>
-                  <button
-                    onClick={() => toggleExpanded(providerId)}
-                    aria-expanded={isExpanded}
-                    aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${provider?.name || providerId} response`}
-                    style={{
-                      background: '#334155',
-                      border: '1px solid #475569',
-                      borderRadius: '6px',
-                      padding: '4px 8px',
-                      color: '#94a3b8',
-                      fontSize: '12px',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '4px'
-                    }}
-                  >
+                <div className="provider-controls" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexShrink: 0 }}>
+                  <button onClick={() => toggleExpanded(providerId)} aria-expanded={isExpanded} aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${provider?.name || providerId} response`} style={{ background: '#334155', border: '1px solid #475569', borderRadius: '6px', padding: '4px 8px', color: '#94a3b8', fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}>
                     {isExpanded ? <ChevronUpIcon style={{ width: '12px', height: '12px' }} /> : <ChevronDownIcon style={{ width: '12px', height: '12px' }} />}
                     {isExpanded ? 'Collapse' : 'Expand'}
                   </button>
                 </div>
-
-                {/* Content Area */}
-                <div 
-                  className="provider-content" 
-                  style={{
-                    flex: 1,
-                    cursor: isExpanded ? 'default' : 'pointer',
-                    overflow: 'hidden',
-                    display: 'flex',
-                    flexDirection: 'column'
-                  }}
-                  onClick={!isExpanded ? () => toggleExpanded(providerId) : undefined}
-                >
-                  {/* Collapsed Gist View */}
+                <div className="provider-content" style={{ flex: 1, cursor: isExpanded ? 'default' : 'pointer', overflow: 'hidden', display: 'flex', flexDirection: 'column' }} onClick={!isExpanded ? () => toggleExpanded(providerId) : undefined}>
                   {!isExpanded && (
-                    <div style={{
-                      fontSize: '13px',
-                      lineHeight: '1.5',
-                      color: '#e2e8f0',
-                      whiteSpace: 'pre-wrap',
-                      display: '-webkit-box',
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: 'vertical',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      height: 'calc(1.5em * 2)', // Exactly 2 lines
-                    }}>
-                      {state.text || getStatusText(state.status)}
-                      {isStreaming && !state.text && <span className="streaming-dots" />}
+                    <div style={{ fontSize: '13px', lineHeight: '1.5', color: '#e2e8f0', whiteSpace: 'pre-wrap', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textOverflow: 'ellipsis', height: 'calc(1.5em * 2)' }}>
+                      {state?.text || getStatusText(state?.status)}
+                      {isStreaming && !state?.text && <span className="streaming-dots" />}
                     </div>
                   )}
-
-                  {/* Expanded Full View */}
                   {isExpanded && (
-                    <div data-provider-chat style={{
-                      fontSize: '13px',
-                      lineHeight: '1.5',
-                      color: '#e2e8f0',
-                      whiteSpace: 'pre-wrap',
-                      maxHeight: '60vh',
-                      overflowY: 'auto',
-                      padding: '12px',
-                      background: 'rgba(0, 0, 0, 0.2)',
-                      borderRadius: '8px',
-                      flex: 1,
-                    }}>
-                      {state.text || getStatusText(state.status)}
+                    <div data-provider-chat style={{ fontSize: '13px', lineHeight: '1.5', color: '#e2e8f0', whiteSpace: 'pre-wrap', maxHeight: '60vh', overflowY: 'auto', padding: '12px', background: 'rgba(0, 0, 0, 0.2)', borderRadius: '8px', flex: 1 }}>
+                      {state?.text || getStatusText(state?.status)}
                       {isStreaming && <span className="streaming-dots" />}
                     </div>
                   )}
-                  {/* Model footer: show model and optional fallback indicator, right-aligned and muted */}
-                  {(() => {
-                    const resp = effectiveProviderResponses[providerId as string] as any;
-                    const modelUsed = resp?.meta?.model;
-                    const fallback = resp?.meta?.fallback;
-                    if (modelUsed) {
-                      return (
-                        <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '6px', textAlign: 'right' }}>
-                          {`Model: ${modelUsed}${fallback ? ' (fallback)' : ''}`}
-                        </div>
-                      );
-                    }
-                    return null;
-                  })()}
-                  
-                  {/* Provider Pill positioned at bottom right */}
                   <div style={{ marginTop: 'auto', display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-                    <CopyButton 
-                      text={state.text} 
-                      label={`Copy ${provider?.name || providerId} response`}
-                    />
+                    <CopyButton text={state?.text} label={`Copy ${provider?.name || providerId} response`} />
                     <ProviderPill id={providerId as any} />
                   </div>
                 </div>
               </div>
             );
-          })}
-        </div>
+          };
+
+          return (
+            <div style={{ position: 'relative' }}>
+              {/* Rail overlay */}
+              <Rail
+                providerIds={railIds}
+                position={position}
+                getStateFor={(pid) => {
+                  const s = (effectiveProviderStates as any)[pid];
+                  return {
+                    streaming: s?.status === 'streaming',
+                    unread: s?.status === 'completed',
+                    error: s?.status === 'error'
+                  };
+                }}
+                onCardClick={(pid) => swapInFromRail(pid)}
+              />
+
+              {/* Main lanes */}
+              <LaneFactory
+                providerIds={mainIds}
+                renderLane={renderProviderCard}
+              />
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

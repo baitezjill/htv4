@@ -25,6 +25,20 @@ export interface LLMProvider {
   icon?: any;
 }
 
+// Lane/Rail types for the 3+rail pattern
+export type LanePosition = 'left' | 'right';
+
+export interface LaneProps {
+  providerId: string;
+}
+
+export interface RailCard {
+  providerId: string;
+  streaming?: boolean;
+  unread?: boolean;
+  error?: boolean;
+}
+
 /** The data structure for a single AI model's response within a message block */
 export interface LLMStreamData {
   providerId: string;
