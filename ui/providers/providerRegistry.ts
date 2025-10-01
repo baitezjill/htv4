@@ -17,7 +17,7 @@ export const INITIAL_PROVIDERS: ProviderConfig[] = [
   { id: 'chatgpt', name: 'ChatGPT', color: '#10A37F', logoBgClass: 'bg-green-500', hostnames: ['chat.openai.com','chatgpt.com'], icon: ChatGPTIcon },
   { id: 'claude',  name: 'Claude',  color: '#FF7F00', logoBgClass: 'bg-orange-500', hostnames: ['claude.ai'],                   icon: ClaudeIcon },
   { id: 'gemini',  name: 'Gemini',  color: '#4285F4', logoBgClass: 'bg-blue-500',   hostnames: ['gemini.google.com'],           icon: GeminiIcon },
-  { id: 'grok',    name: 'Grok',    color: '#9d71ff', logoBgClass: 'bg-purple-500', hostnames: ['grok.com'],                    icon: GrokIcon },
+{ id: 'grok',    name: 'Grok',    color: '#9d71ff', logoBgClass: 'bg-purple-500', hostnames: ['grok.com'],                    icon: GrokIcon, emoji: '🚀' },
 ];
 
 // Mutable list used by the LaneFactory/Rail

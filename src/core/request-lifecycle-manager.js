@@ -304,13 +304,19 @@ export function classifyProviderError(provider, error) {
       if (message.includes("cloudflare")) return { type: t("openaiCloudflare") };
       return { type: t("openaiServerError") };
     }
-    default: {
-      if (type === "tooManyRequests") return { type: t("tooManyRequests") };
-      if (type === "functionsNotSupported") return { type: t("functionsNotSupported") };
+    case "grok-session": {
+      if (type === "csrf_expired") return { type: t("cloudgptNoTokens") };
+      if (type === "bad_request") return { type: t("cloudgptUnexpected") };
+      if (type === "network") return { type: t("cloudgptNetwork") };
       return { type: t("cloudgptUnknown") };
     }
-  }
-}
+     default: {
+       if (type === "tooManyRequests") return { type: t("tooManyRequests") };
+       if (type === "functionsNotSupported") return { type: t("functionsNotSupported") };
+       return { type: t("cloudgptUnknown") };
+     }
+   }
+ }
 
 export class HTOSUnifiedRequestController {
   constructor(utils, sharedState) {

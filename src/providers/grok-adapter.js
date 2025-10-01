@@ -1,10 +1,11 @@
-// src/providers/grok-adapter.js
-// Adapter pattern matching Claude/Gemini, cookie-based Grok
-import { classifyProviderError } from '../core/request-lifecycle-manager.js';
+/**
+ * HTOS Grok Provider Adapter  –  SERVICE-WORKER SAFE
+ */
+import { classifyProviderError } from "../core/request-lifecycle-manager.js";
 
 export class GrokAdapter {
   constructor(controller) {
-    this.id = 'grok';
+    this.id = "grok";
     this.capabilities = {
       needsDNR: false,
       needsOffscreen: false,
@@ -15,93 +16,58 @@ export class GrokAdapter {
     this.controller = controller;
   }
 
-  async init() { return; }
+  async init() {
+    /* no-op */
+  }
 
   async healthCheck() {
     try {
-      return await this.controller.isAvailable();
+      const cookie = await chrome.cookies.get({
+        url: "https://x.com",
+        name: "ct0",
+      });
+      return !!cookie?.value;
     } catch {
       return false;
     }
   }
 
   async sendPrompt(req, onChunk, signal) {
-    const startTime = Date.now();
+    const start = Date.now();
     try {
       const result = await this.controller.grokSession.ask(
         req.originalPrompt,
-        { signal, conversationId: req?.meta?.conversationId, parentResponseId: req?.meta?.parentResponseId },
-        (chunk) => { if (this.capabilities.supportsStreaming && onChunk) onChunk({ providerId: this.id, ok: true, text: chunk?.text || '', partial: true }); }
+        { signal, model: req.meta?.model, chatId: req.meta?.conversationId },
+        (chunk) => onChunk({ ...chunk, partial: true })
       );
-
       return {
         providerId: this.id,
         ok: true,
-        id: result?.responseId || null,
-        text: result?.text || '',
+        id: result.responseId || null,
+        text: result.text || "",
         partial: false,
-        latencyMs: Date.now() - startTime,
-        meta: {
-          conversationId: result?.conversationId || undefined,
-          responseId: result?.responseId || undefined,
-        }
+        latencyMs: Date.now() - start,
+        meta: { conversationId: result.conversationId, responseId: result.responseId || null },
       };
-    } catch (error) {
-      const classification = classifyProviderError('grok-session', error);
-      const errorCode = classification.type || 'unknown';
+    } catch (e) {
+      const cls = classifyProviderError("grok-session", e);
       return {
         providerId: this.id,
         ok: false,
         text: null,
-        errorCode,
-        latencyMs: Date.now() - startTime,
-        meta: {
-          error: error?.toString?.() || String(error),
-          details: error?.details,
-          suppressed: classification.suppressed,
-        }
+        errorCode: cls.type || "unknown",
+        latencyMs: Date.now() - start,
+        meta: { error: e.message, details: e.details, suppressed: cls.suppressed }
       };
     }
   }
 
   async sendContinuation(prompt, providerContext, sessionId, onChunk, signal) {
-    const startTime = Date.now();
-    try {
-      const result = await this.controller.grokSession.ask(
-        prompt,
-        { signal, conversationId: providerContext?.conversationId, parentResponseId: providerContext?.responseId },
-        (chunk) => { if (this.capabilities.supportsStreaming && onChunk) onChunk({ providerId: this.id, ok: true, text: chunk?.text || '', partial: true }); }
-      );
-
-      return {
-        providerId: this.id,
-        ok: true,
-        id: result?.responseId || null,
-        text: result?.text || '',
-        partial: false,
-        latencyMs: Date.now() - startTime,
-        meta: {
-          conversationId: result?.conversationId || providerContext?.conversationId,
-          responseId: result?.responseId || providerContext?.responseId,
-        }
-      };
-    } catch (error) {
-      const classification = classifyProviderError('grok-session', error);
-      const errorCode = classification.type || 'unknown';
-      return {
-        providerId: this.id,
-        ok: false,
-        text: null,
-        errorCode,
-        latencyMs: Date.now() - startTime,
-        meta: {
-          error: error?.toString?.() || String(error),
-          details: error?.details,
-          suppressed: classification.suppressed,
-          conversationId: providerContext?.conversationId,
-          responseId: providerContext?.responseId,
-        }
-      };
-    }
+    // Grok uses the same endpoint for continuation – just re-use sendPrompt
+    return this.sendPrompt(
+      { originalPrompt: prompt, sessionId, meta: providerContext },
+      onChunk,
+      signal
+    );
   }
 }

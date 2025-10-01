@@ -23,6 +23,7 @@ export interface LLMProvider {
   color: string;
   logoBgClass: string;
   icon?: any;
+  emoji?: string; // optional UI emoji for pills/badges
 }
 
 // Lane/Rail types for the 3+rail pattern

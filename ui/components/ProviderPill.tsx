@@ -1,9 +1,18 @@
-export const ProviderPill = ({ id }: { id: 'chatgpt' | 'claude' | 'gemini' }) => {
-  const cfg = {
+import { getProviderById } from '../providers/providerRegistry';
+
+export const ProviderPill = ({ id }: { id: string }) => {
+  // Local fallback map for known providers; registry is authoritative if present
+  const fallback = {
     chatgpt: { emoji: '🟢', name: 'ChatGPT' },
-    claude: { emoji: '🟠', name: 'Claude' },
-    gemini: { emoji: '🔵', name: 'Gemini' }
-  };
+    claude:  { emoji: '🟠', name: 'Claude' },
+    gemini:  { emoji: '🔵', name: 'Gemini' },
+    grok:    { emoji: '🚀', name: 'Grok' },
+  } as Record<string, { emoji: string; name: string }>;
+
+  const prov = getProviderById(id);
+  const emoji = (prov as any)?.emoji || fallback[id]?.emoji || '🤖';
+  const name  = prov?.name || fallback[id]?.name || (id || 'Unknown');
+
   return (
     <span className="provider-pill" style={{
       fontSize: '10px',
@@ -17,7 +26,7 @@ export const ProviderPill = ({ id }: { id: 'chatgpt' | 'claude' | 'gemini' }) =>
       alignSelf: 'flex-end',
       marginTop: '8px',
     }}>
-      {cfg[id].emoji} {cfg[id].name}
+      {emoji} {name}
     </span>
   );
 };

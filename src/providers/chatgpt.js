@@ -786,50 +786,57 @@ export class ChatGPTSessionApi {
   }
 
   async _generateProofToken({ seed, difficulty }) {
-    const scripts = await this._getScripts();
-    const dpl = await this._getDpl();
     try {
-      const __chatgpt_gen_start = Date.now();
-      const __chatgpt_gen_payload = {
-        seed,
-        difficulty,
-        scripts,
-        dpl,
-      };
-      console.log("[ChatGPT Debug] about to call ai.generateProofToken", {
-        ts: Date.now(),
-        payload: { seed, difficulty, scripts: scripts?.length || 0, dpl },
-      });
-      // Use bus send with timeout helper to avoid hanging the session
-      const __chatgpt_gen_res = await this._busSendWithTimeout(
-        "ai.generateProofToken",
-        __chatgpt_gen_payload,
-        { timeoutMs: 15000, retries: 2 }
-      ).catch((e) => {
-        console.error("[ChatGPT Debug] ai.generateProofToken error", e, {
+      const scripts = await this._getScripts();
+      const dpl = await this._getDpl();
+      try {
+        const __chatgpt_gen_start = Date.now();
+        const __chatgpt_gen_payload = {
+          seed,
+          difficulty,
+          scripts,
+          dpl,
+        };
+        console.log("[ChatGPT Debug] about to call ai.generateProofToken", {
+          ts: Date.now(),
+          payload: { seed, difficulty, scripts: scripts?.length || 0, dpl },
+        });
+        // Use bus send with timeout helper to avoid hanging the session
+        const __chatgpt_gen_res = await this._busSendWithTimeout(
+          "ai.generateProofToken",
+          __chatgpt_gen_payload,
+          { timeoutMs: 15000, retries: 2 }
+        ).catch((e) => {
+          console.error("[ChatGPT Debug] ai.generateProofToken error", e, {
+            ts: Date.now(),
+            dur: Date.now() - __chatgpt_gen_start,
+          });
+          throw e;
+        });
+        console.log("[ChatGPT Debug] ai.generateProofToken response", {
+          res: __chatgpt_gen_res,
           ts: Date.now(),
           dur: Date.now() - __chatgpt_gen_start,
         });
-        throw e;
-      });
-      console.log("[ChatGPT Debug] ai.generateProofToken response", {
-        res: __chatgpt_gen_res,
-        ts: Date.now(),
-        dur: Date.now() - __chatgpt_gen_start,
-      });
-      // Validate the response – it must be a non-empty string. Structured
-      // error objects or null/undefined should be treated as failures.
-      if (!__chatgpt_gen_res || typeof __chatgpt_gen_res !== 'string') {
-        const errMsg = (typeof __chatgpt_gen_res === 'object' && __chatgpt_gen_res?.error)
-          ? __chatgpt_gen_res.error
-          : 'Invalid proof token response';
-        throw this._createError('powGenerationFailed', errMsg);
+        // Validate the response – it must be a non-empty string. Structured
+        // error objects or null/undefined should be treated as failures.
+        if (!__chatgpt_gen_res || typeof __chatgpt_gen_res !== 'string') {
+          const errMsg = (typeof __chatgpt_gen_res === 'object' && __chatgpt_gen_res?.error)
+            ? __chatgpt_gen_res.error
+            : 'Invalid proof token response';
+          // Return structured error instead of throwing a raw exception
+          return { ok: false, error: 'powGenerationFailed', details: errMsg };
+        }
+        return { ok: true, token: `${AE_CONFIG.pow.prefix}${__chatgpt_gen_res}` };
+      } catch (e) {
+        // Surface error for upstream handling but return structured shape
+        this._logError("generateProofToken failed", e);
+        return { ok: false, error: (e && e.message) || String(e), details: e?.details || null };
       }
-      return `${AE_CONFIG.pow.prefix}${__chatgpt_gen_res}`;
     } catch (e) {
       // Surface error for upstream handling
       this._logError("generateProofToken failed", e);
-      throw e;
+      return { ok: false, error: (e && e.message) || String(e), details: e?.details || null };
     }
   }
 
@@ -985,14 +992,33 @@ export class ChatGPTSessionApi {
       }
 
       try {
-        const token = await this._generateProofToken({ seed, difficulty });
-        if (!token) {
+        // _generateProofToken may return either a plain string or a structured
+        // object like { ok: true, token: '...' } or { ok: false, error: '...' }.
+        // Normalize all cases to a string token value and fail explicitly when
+        // generation returned a structured failure.
+        const tokenRes = await this._generateProofToken({ seed, difficulty });
+        let tokenVal = null;
+        if (typeof tokenRes === 'string') {
+          tokenVal = tokenRes;
+        } else if (tokenRes && tokenRes.ok === true && typeof tokenRes.token === 'string') {
+          tokenVal = tokenRes.token;
+        } else if (tokenRes && tokenRes.ok === false) {
+          throw new ChatGPTProviderError('powGenerationFailed', tokenRes.details || tokenRes.error || 'PoW generation failed');
+        } else if (tokenRes && typeof tokenRes === 'object' && typeof tokenRes.token === 'string') {
+          // accomodate alternative shapes where token field exists without ok flag
+          tokenVal = tokenRes.token;
+        } else if (tokenRes != null) {
+          // Fallback: coerce to string (safe) but log for visibility
+          try { tokenVal = String(tokenRes); } catch { tokenVal = null; }
+        }
+        if (!tokenVal) {
           throw new ChatGPTProviderError(
-            "powGenerationFailed",
-            "PoW token generation returned null/empty result"
+            'powGenerationFailed',
+            'PoW token generation returned empty value'
           );
         }
-        headers[AE_CONFIG.pow.headerName] = token;
+        // Assign normalized header value (do not inject objects)
+        headers[AE_CONFIG.pow.headerName] = tokenVal;
         console.log(
           "[ChatGPT Session] PoW token generated and injected directly into headers"
         );
@@ -1025,14 +1051,24 @@ export class ChatGPTSessionApi {
       }
 
       try {
-        const arkoseToken = await this._retrieveArkoseToken(dx);
-        if (!arkoseToken) {
-          throw new ChatGPTProviderError(
-            "arkoseRetrievalFailed",
-            "Arkose token retrieval returned null/empty result"
-          );
+        // _retrieveArkoseToken may return a string or a structured object.
+        const arkoseRes = await this._retrieveArkoseToken(dx);
+        let arkoseVal = null;
+        if (typeof arkoseRes === 'string') {
+          arkoseVal = arkoseRes;
+        } else if (arkoseRes && arkoseRes.ok === true && typeof arkoseRes.token === 'string') {
+          arkoseVal = arkoseRes.token;
+        } else if (arkoseRes && arkoseRes.ok === false) {
+          throw new ChatGPTProviderError('arkoseRetrievalFailed', arkoseRes.details || arkoseRes.error || 'Arkose retrieval failed');
+        } else if (arkoseRes && typeof arkoseRes === 'object' && typeof arkoseRes.token === 'string') {
+          arkoseVal = arkoseRes.token;
+        } else if (arkoseRes != null) {
+          try { arkoseVal = String(arkoseRes); } catch { arkoseVal = null; }
         }
-        headers[AE_CONFIG.headerName] = arkoseToken;
+        if (!arkoseVal) {
+          throw new ChatGPTProviderError('arkoseRetrievalFailed', 'Arkose token retrieval returned empty value');
+        }
+        headers[AE_CONFIG.headerName] = arkoseVal;
         console.log(
           "[ChatGPT Session] Arkose token retrieved and injected directly into headers"
         );
@@ -1135,8 +1171,9 @@ export class ChatGPTSessionApi {
   async _safeJson(res) {
     try {
       return await res.json();
-    } catch {
-      return null;
+    } catch (e) {
+      // Return structured failure rather than null which can lead to TypeErrors
+      return { ok: false, error: 'invalid_json', details: (e && e.message) || String(e) };
     }
   }
 }

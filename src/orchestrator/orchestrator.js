@@ -77,12 +77,20 @@ Begin Synthesis:`;
     let timer;
     const to = new Promise((_, rej) => {
       timer = setTimeout(() => {
-        if (reqId && this.requestController) {
-          // Use requestController for abort
-          this.requestController.abort(reqId);
-        } else {
-          // Fallback to direct controller abort
-          controller?.abort?.();
+        try {
+          if (reqId && this.requestController) {
+            // Previously aborted the controller here. Change to cleanup so the underlying
+            // request is NOT aborted when a timeout occurs. This allows background
+            // provider requests to continue and deliver late results.
+            this.requestController.cleanup(reqId);
+            console.warn(`[Orchestrator] withTimeout: request ${reqId} timed out (controller cleaned up, not aborted)`);
+          } else {
+            // Fallback: if no requestController provided, abort the direct controller.
+            controller?.abort?.();
+            console.warn('[Orchestrator] withTimeout: direct controller aborted due to timeout');
+          }
+        } catch (err) {
+          console.warn('[Orchestrator] withTimeout cleanup failed', err);
         }
         rej(new Error("timeout"));
       }, ms);

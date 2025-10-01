@@ -25,6 +25,12 @@
       "js": ["cs-openai.js"],
       "run_at": "document_start",
       "all_frames": true
+    },
+    {
+      "matches": ["https://x.com/*", "https://*.x.com/*"],
+      "js": ["content-scripts/grok-bridge.js"],
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
   "action": { "default_title": "HTOS" },

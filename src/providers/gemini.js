@@ -122,14 +122,22 @@ export class GeminiSessionApi {
             l.find((e) => {
                 try {
                     const t = JSON.parse(e[2]);
+                    // Safely extract text using optional chaining and fallbacks
+                    const text = (t?.[0]?.[0]) || (t?.[4]?.[0]?.[1]?.[0]) || "";
+
+                    // Safely build cursor: ensure t[1] is an array and t[4]?.[0]?.[0] exists
+                    const baseCursor = Array.isArray(t?.[1]) ? t[1] : [];
+                    const tail = (t && t[4] && Array.isArray(t[4]) && t[4][0] != null) ? t[4][0][0] : undefined;
+                    const cursor = (tail !== undefined) ? [...baseCursor, tail] : baseCursor;
+
                     u = {
-                        text: t[0]?.[0] || t[4]?.[0]?.[1]?.[0] || "",
-                        cursor: [...t[1], t[4][0][0]]
+                        text,
+                        cursor
                     };
                     return true;
                 }
-                catch (e) {
-                    p = e;
+                catch (err) {
+                    p = err;
                     return false;
                 }
             });

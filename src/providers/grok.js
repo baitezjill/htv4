@@ -1,209 +1,234 @@
-// src/providers/grok.js
-// Thin cookie-based Grok controller for the Service Worker
-// - No API keys
-// - No content-scripts
-// - Auth via browser cookie
+/**
 
-export class GrokProviderController {
-  constructor() {
-    this.id = 'grok';
-    this.baseURL = 'https://grok.com/rest/app-chat';
-    this.initialized = false;
-    this.grokSession = {
-      ask: this._ask.bind(this),
-    };
+HTOS Grok Provider Implementation – SERVICE-WORKER SAFE
+No DOM globals; only chrome.* APIs
+*/
+import { BusController } from "../core/vendor-exports.js";
+export const GrokModels = {
+  auto: { id: "auto", name: "Auto", maxTokens: 128000 },
+  grok2: { id: "grok-2-latest", name: "Grok-2", maxTokens: 128000 },
+};
+
+export class GrokProviderError extends Error {
+  constructor(type, details) {
+    super(type);
+    this.name = "GrokProviderError";
+    this.type = type;
+    this.details = details;
+  }
+}
+
+/* ---------- session API ---------- */
+export class GrokSessionApi {
+  constructor({ fetchImpl = fetch } = {}) {
+    this.fetch = fetchImpl;
+    this.ask = this._wrapMethod(this.ask);
   }
 
-  async init() {
-    if (this.initialized) return;
-    this.initialized = true;
+  isOwnError(e) {
+    return e instanceof GrokProviderError;
   }
 
-  async isAuthenticated() {
-    try {
-      // Prefer a stable session cookie; fall back to anon cookie
-      const sso = await chrome.cookies.get({ url: 'https://grok.com', name: 'sso' });
-      const anon = await chrome.cookies.get({ url: 'https://grok.com', name: 'x-anonuserid' });
-      return !!(sso || anon);
-    } catch (_) {
-      return false;
-    }
-  }
+  /* ---- public ---- */
+  async ask(prompt, options = {}, onChunk = () => {}) {
+    const signal = options.signal;
+    const model = options.model || "grok-2-latest";
+    const chatId = options.chatId; // null → new chat
 
-  async isAvailable() {
-    const ok = await this.isAuthenticated();
-    if (!ok) {
+    // 1. live tab cookie + fresh UUIDs via content-script bridge (connect to tab), fallback to chrome.cookies
+    let csrf, txnId, reqId;
+    if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query && chrome.tabs.connect) {
       try {
-        chrome.runtime.sendMessage({
-          type: 'SHOW_BANNER',
-          provider: 'grok',
-          message: 'Please open grok.com once to log in',
-        });
-      } catch (_) {}
+        // Find a tab matching x.com (include subdomains)
+        const tabs = await chrome.tabs.query({ url: ['https://x.com/*', 'https://*.x.com/*'] });
+        let tab = (tabs && tabs.length) ? tabs.find(t => typeof t.url === 'string' && /https:\/\/(?:.*\.)?x\.com\//.test(t.url)) : null;
+        if (!tab && tabs && tabs.length) tab = tabs[0];
+        if (tab && tab.id != null) {
+          const csrfResp = await new Promise((res, rej) => {
+            const port = chrome.tabs.connect(tab.id, { name: 'grok-csrf' });
+            const to = setTimeout(() => { try { port.disconnect(); } catch(_){}; rej(new Error('csrf-bridge-timeout')); }, 3000);
+            port.onMessage.addListener(function onMsg(msg) { clearTimeout(to); try { port.disconnect(); } catch(_){}; port.onMessage.removeListener(onMsg); res(msg); });
+            try { port.postMessage({ type: 'grok-tokens' }); } catch (e) { clearTimeout(to); try { port.disconnect(); } catch(_){}; rej(e); }
+          });
+          csrf = csrfResp.csrf; txnId = csrfResp.txnId; reqId = csrfResp.reqId;
+        } else {
+          // no matching tab — fallback to cookie
+          const cookie = await chrome.cookies.get({ url: 'https://x.com', name: 'ct0' });
+          csrf = cookie?.value || '';
+          txnId = self.crypto.randomUUID(); reqId = self.crypto.randomUUID();
+        }
+      } catch (e) {
+        // bridge failed — fall back to chrome.cookies
+        const cookie = await chrome.cookies.get({ url: 'https://x.com', name: 'ct0' });
+        csrf = cookie?.value || '';
+        txnId = self.crypto.randomUUID(); reqId = self.crypto.randomUUID();
+      }
+    } else {
+      const cookie = await chrome.cookies.get({ url: 'https://x.com', name: 'ct0' });
+      csrf = cookie?.value || '';
+      txnId = self.crypto.randomUUID(); reqId = self.crypto.randomUUID();
     }
-    return ok;
-  }
+    if (!csrf) throw new GrokProviderError('login', 'Missing live ct0 cookie');
 
-  async _ask(prompt, options = {}, onChunk = () => {}) {
-    // options: { signal, conversationId, parentResponseId, isReasoning }
-    const { signal, conversationId = 'new', parentResponseId = '', isReasoning = false } = options || {};
-
-    // Ensure cookie-based auth exists
-    const authed = await this.isAvailable();
-    if (!authed) {
-      return { text: '', model: 'grok', conversationId: null, responseId: null };
+    // 2. create conversation if needed
+    let conversationId = chatId;
+    if (!conversationId) {
+      const create = await this.fetch('https://x.com/i/api/graphql/vvC5uy7pWWHXS2aDi1FZeA/CreateGrokConversation', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'content-type': 'application/json',
+          'x-csrf-token': csrf,
+          'x-client-transaction-id': txnId,
+          'x-twitter-auth-type': 'OAuth2Session'
+        },
+        body: JSON.stringify({ variables: {}, queryId: 'vvC5uy7pWWHXS2aDi1FZeA' }),
+        signal
+      });
+      const data = await create.json();
+      conversationId = data.data?.create_grok_conversation?.conversation_id;
+      if (!conversationId) throw new GrokProviderError('unknown', 'No conversation_id returned');
     }
 
-    const isNew = conversationId === 'new';
-    const url = isNew
-      ? `${this.baseURL}/conversations/new`
-      : `${this.baseURL}/conversations/${encodeURIComponent(conversationId)}/responses`;
-
-    // Streaming NDJSON
-    const payload = {
-      temporary: false,
-      modelName: 'grok-3',
-      message: String(prompt || ''),
-      fileAttachments: [],
-      imageAttachments: [],
-      disableSearch: false,
-      enableImageGeneration: true,
-      returnImageBytes: false,
-      returnRawGrokInXaiRequest: false,
-      enableImageStreaming: true,
-      imageGenerationCount: 2,
-      forceConcise: false,
+    // 3. send message
+    const messageBody = {
+      responses: [{ message: prompt, sender: 1, promptSource: '', fileAttachments: [] }],
+      systemPromptName: '',
+      grokModelOptionId: model,
+      modelMode: 'MODEL_MODE_FAST',
+      conversationId,
+      returnSearchResults: true,
+      returnCitations: true,
+      promptMetadata: { promptSource: 'NATURAL', action: 'INPUT' },
+      imageGenerationCount: 4,
+      requestFeatures: { eagerTweets: true, serverHistory: true },
+      enableSideBySide: true,
       toolOverrides: {},
-      enableSideBySide: false,
-      sendFinalMetadata: true,
-      customInstructions: '',
-      deepsearchPreset: '',
-      isReasoning: Boolean(isReasoning),
-      ...(isNew ? {} : { parentResponseId: parentResponseId || '' }),
+      modelConfigOverride: {},
+      isTemporaryChat: false
     };
 
-    const resp = await fetch(url, {
+    const headers = {
+      'accept': '*/*',
+      'accept-language': 'en-US,en;q=0.9',
+      'content-type': 'text/plain;charset=UTF-8',
+      'x-csrf-token': csrf,
+      'x-client-transaction-id': txnId,
+      'x-xai-request-id': reqId,
+      'x-twitter-active-user': 'yes',
+      'x-twitter-auth-type': 'OAuth2Session'
+    };
+
+    const resp = await this.fetch('https://grok.x.com/2/grok/add_response.json', {
       method: 'POST',
       credentials: 'include',
-      headers: {
-        'content-type': 'application/json',
-        accept: '*/*',
-        origin: 'https://grok.com',
-        referer: 'https://grok.com/',
-      },
-      body: JSON.stringify(payload),
-      signal,
+      headers,
+      referrer: 'https://x.com/',
+      body: JSON.stringify(messageBody),
+      signal
     });
 
-    if (!resp.body) {
-      // Non-streaming fallback
-      const bodyText = await resp.text();
-      const parsed = this._parseNdjson(bodyText);
-      const full = parsed.fullMessage || '';
-      if (full) onChunk({ text: full, partial: true });
-      return {
-        text: full,
-        model: 'grok',
-        conversationId: parsed.conversationId || null,
-        responseId: parsed.responseId || null,
-        meta: { modelResponse: parsed.modelResponse }
-      };
-    }
+    if (resp.status !== 200) throw new GrokProviderError('unknown', `${resp.status} ${resp.statusText}`);
 
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder('utf-8');
-    let buffer = '';
+    // 4. stream SSE or fallback
     let fullText = '';
     let responseId = null;
-    let conversationIdOut = conversationId === 'new' ? null : conversationId;
     let modelResponse = null;
 
+    const reader = resp.body?.getReader?.();
+    const decoder = new TextDecoder();
+
+    if (!reader) {
+      // non-stream fallback: parse text for data: lines
+      const txt = await resp.text();
+      try {
+        const lines = String(txt || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('data: '));
+        for (const line of lines) {
+          try {
+            const parsed = JSON.parse(line.slice(6));
+            const text = parsed.message?.content?.parts?.[0] || '';
+            if (text) fullText += text;
+            responseId = parsed.responseId || responseId || parsed.response?.responseId || null;
+            if (parsed.response?.modelResponse) modelResponse = parsed.response.modelResponse;
+            else if (parsed.modelResponse) modelResponse = parsed.modelResponse;
+          } catch(_){}
+        }
+      } catch(_){}
+      if (fullText) onChunk({ text: fullText, chatId: conversationId, responseId });
+      return { text: fullText, conversationId, responseId, meta: { modelResponse } };
+    }
+
+    // streaming reader
+    let buffer = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-
       let idx = buffer.indexOf('\n');
       while (idx !== -1) {
-        const line = buffer.slice(0, idx);
+        const line = buffer.slice(0, idx).trim();
         buffer = buffer.slice(idx + 1);
         try {
-          if (line.trim()) {
-            const evt = JSON.parse(line);
-            const r = evt?.result || {};
-
-            if (r.conversation?.conversationId) {
-              conversationIdOut = r.conversation.conversationId;
-            }
-
-            let tok;
-            if (r.response?.token !== undefined) {
-              tok = r.response.token;
-              responseId = r.response.responseId || responseId;
-            } else if (r.token !== undefined) {
-              tok = r.token || '';
-              responseId = r.responseId || responseId;
-            }
-
-            if (tok !== undefined) {
-              fullText += tok;
-              onChunk({ text: fullText, partial: true });
-            }
-
-            if (r.response?.modelResponse) {
-              modelResponse = r.response.modelResponse;
-              responseId = modelResponse?.responseId || responseId;
-            } else if (r.modelResponse) {
-              modelResponse = r.modelResponse;
-              responseId = modelResponse?.responseId || responseId;
-            }
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') { idx = buffer.indexOf('\n'); continue; }
+            try {
+              const parsed = JSON.parse(data);
+              const text = parsed.message?.content?.parts?.[0] || '';
+              if (text) fullText += text;
+              responseId = parsed.responseId || responseId || parsed.response?.responseId || responseId;
+              if (parsed.response?.modelResponse) modelResponse = parsed.response.modelResponse;
+              else if (parsed.modelResponse) modelResponse = parsed.modelResponse;
+              if (fullText) onChunk({ text: fullText, chatId: conversationId, responseId });
+            } catch(_){}
           }
-        } catch (_) {}
+        } catch(_){}
         idx = buffer.indexOf('\n');
       }
     }
 
-    // If modelResponse has a final message but tokens were not handled
-    try {
-      if (modelResponse?.message && !fullText) fullText = modelResponse.message;
-    } catch (_) {}
+    // final fallback: if modelResponse has message but fullText empty
+    try { if (modelResponse?.message && !fullText) fullText = modelResponse.message; } catch (_){}
 
-    return {
-      text: fullText,
-      model: 'grok',
-      conversationId: conversationIdOut,
-      responseId,
-      meta: { modelResponse }
-    };
+    return { text: fullText, conversationId, responseId, meta: { modelResponse } };
   }
 
-  _parseNdjson(text) {
-    let fullMessage = '';
-    let responseId;
-    let modelResponse;
-    let conversationId;
-    for (const line of String(text || '').trim().split('\n')) {
+  /* ---- private ---- */
+  _wrapMethod(fn) {
+    return async (...args) => {
       try {
-        if (!line.trim()) continue;
-        const evt = JSON.parse(line);
-        const r = evt?.result || {};
-        if (r.conversation?.conversationId) conversationId = r.conversation.conversationId;
-        if (r.response?.token !== undefined) {
-          fullMessage += r.response.token;
-          responseId = r.response.responseId || responseId;
-        } else if (r.token !== undefined) {
-          fullMessage += r.token || '';
-          responseId = r.responseId || responseId;
-        }
-        if (r.response?.modelResponse) {
-          modelResponse = r.response.modelResponse;
-          responseId = modelResponse?.responseId || responseId;
-        } else if (r.modelResponse) {
-          modelResponse = r.modelResponse;
-          responseId = modelResponse?.responseId || responseId;
-        }
-      } catch (_) {}
+        return await fn.call(this, ...args);
+      } catch (e) {
+        throw this.isOwnError(e)
+          ? e
+          : new GrokProviderError("unknown", e.message);
+      }
+    };
+  }
+}
+
+/* ---------- controller ---------- */
+export class GrokProviderController {
+  constructor() {
+    this.initialized = false;
+    this.api = new GrokSessionApi();
+  }
+
+  async init() {
+    if (this.initialized) return;
+    // expose bus handler
+    if (typeof BusController !== "undefined" && BusController.on) {
+      BusController.on("grok.ask", (p) =>
+        this.api.ask(p.prompt, p.options || {}, p.onChunk || (() => {}))
+      );
     }
-    return { fullMessage, responseId, modelResponse, conversationId };
+    this.initialized = true;
+  }
+
+  get grokSession() {
+    return this.api;
+  }
+  isOwnError(e) {
+    return this.api.isOwnError(e);
   }
 }
