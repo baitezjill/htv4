@@ -6,7 +6,7 @@ export const ProviderPill = ({ id }: { id: string }) => {
     chatgpt: { emoji: '🟢', name: 'ChatGPT' },
     claude:  { emoji: '🟠', name: 'Claude' },
     gemini:  { emoji: '🔵', name: 'Gemini' },
-    grok:    { emoji: '🚀', name: 'Grok' },
+    qwen:    { emoji: '🤖', name: 'Qwen' },
   } as Record<string, { emoji: string; name: string }>;
 
   const prov = getProviderById(id);

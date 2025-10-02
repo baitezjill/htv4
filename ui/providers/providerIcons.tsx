@@ -18,4 +18,4 @@ const baseIcon = (fill: string) => ({ size = 16, style = {} as React.CSSProperti
 export const ChatGPTIcon = baseIcon(tokens.accents.chatgpt);
 export const ClaudeIcon  = baseIcon(tokens.accents.claude);
 export const GeminiIcon  = baseIcon(tokens.accents.gemini);
-export const GrokIcon    = baseIcon(tokens.accents.grok);
+export const QwenIcon    = baseIcon(tokens.accents.qwen);

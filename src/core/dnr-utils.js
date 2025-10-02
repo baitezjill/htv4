@@ -478,6 +478,31 @@ export class ProviderDNRGate {
             condition: { urlFilter: '*://gemini.google.com/*', resourceTypes: [chrome.declarativeNetRequest.ResourceType.SUB_FRAME] }
           }
         ];
+      case 'qwen':
+        return [
+          {
+            priority: 1,
+            action: {
+              type: chrome.declarativeNetRequest.RuleActionType.MODIFY_HEADERS,
+              requestHeaders: [
+                {
+                  header: 'origin',
+                  operation: chrome.declarativeNetRequest.HeaderOperation.SET,
+                  value: 'https://www.tongyi.com'
+                },
+                {
+                  header: 'referer',
+                  operation: chrome.declarativeNetRequest.HeaderOperation.SET,
+                  value: 'https://www.tongyi.com/'
+                }
+              ]
+            },
+            condition: {
+              requestDomains: ["qianwen.aliyun.com", "api.tongyi.com"],
+              resourceTypes: [chrome.declarativeNetRequest.ResourceType.XMLHTTPREQUEST]
+            }
+          }
+        ];
       default:
         return [];
     }

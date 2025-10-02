@@ -22,6 +22,6 @@ export const tokens = {
     chatgpt: '#10A37F',
     claude: '#FF7F00',
     gemini: '#4285F4',
-    grok: '#9d71ff'
+    qwen: '#00A9E0' // A distinct teal color for Qwen
   }
 } as const;

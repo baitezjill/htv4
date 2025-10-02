@@ -29,6 +29,9 @@ export const HTOSErrorMap = {
   claudeBadModel: "claude-bad-model",
   claudeUnexpected: "claude-unexpected",
   claudeFreeLimitExceeded: "claude-free-limit-exceeded",
+  qwenLogin: "qwen-login",
+  qwenBadApiKey: "qwen-bad-api-key",
+  qwenUnexpected: "qwen-unexpected",
   cloudgptNetwork: "cloudgpt-network",
   cloudgptUnknown: "cloudgpt-unknwon",
   cloudgptUnexpected: "cloudgpt-unexpeceted",
@@ -304,11 +307,12 @@ export function classifyProviderError(provider, error) {
       if (message.includes("cloudflare")) return { type: t("openaiCloudflare") };
       return { type: t("openaiServerError") };
     }
-    case "grok-session": {
-      if (type === "csrf_expired") return { type: t("cloudgptNoTokens") };
-      if (type === "bad_request") return { type: t("cloudgptUnexpected") };
-      if (type === "network") return { type: t("cloudgptNetwork") };
-      return { type: t("cloudgptUnknown") };
+    case "qwen-session": {
+      if (type === 401 || message.includes("incorrect api key")) return { type: t("qwenBadApiKey") };
+      if (type === "login") return { type: t("qwenLogin") };
+      if (type === "network" || message.includes("connection error")) return { type: t("cloudgptNetwork") };
+      if (type === "tooManyRequests" || message.includes("exceeds the model limit")) return { type: t("tooManyRequests") };
+      return { type: t("qwenUnexpected") };
     }
      default: {
        if (type === "tooManyRequests") return { type: t("tooManyRequests") };

@@ -106,25 +106,28 @@ let AE_CONFIG = { ...DEFAULT_AE_CONFIG };
 
 // Helper function to update AE config at runtime
 function updateAEConfig(runtimeConfig) {
-  console.log('[ChatGPT] Updating AE config with runtime values:', Object.keys(runtimeConfig));
+  console.log(
+    "[ChatGPT] Updating AE config with runtime values:",
+    Object.keys(runtimeConfig)
+  );
   AE_CONFIG = {
     ...DEFAULT_AE_CONFIG,
     ...runtimeConfig,
     // Deep merge nested objects
     requirements: {
       ...DEFAULT_AE_CONFIG.requirements,
-      ...(runtimeConfig.requirements || {})
+      ...(runtimeConfig.requirements || {}),
     },
     pow: {
       ...DEFAULT_AE_CONFIG.pow,
-      ...(runtimeConfig.pow || {})
+      ...(runtimeConfig.pow || {}),
     },
     parameters: {
       ...DEFAULT_AE_CONFIG.parameters,
-      ...(runtimeConfig.parameters || {})
-    }
+      ...(runtimeConfig.parameters || {}),
+    },
   };
-  console.log('[ChatGPT] AE config updated successfully');
+  console.log("[ChatGPT] AE config updated successfully");
 }
 
 // =============================================================================
@@ -237,7 +240,7 @@ export class ChatGPTProviderController {
 
   // Public method to update AE configuration at runtime
   updateAEConfig(runtimeConfig) {
-    console.log('[ChatGPTProviderController] Updating AE configuration');
+    console.log("[ChatGPTProviderController] Updating AE configuration");
     updateAEConfig(runtimeConfig);
     return AE_CONFIG;
   }
@@ -283,10 +286,12 @@ export class ChatGPTSessionApi {
     const htos = this._getHtos();
     if (htos?.$bus) return htos.$bus;
     try {
-      if (typeof self !== 'undefined' && self.bus) return self.bus;
-      if (typeof globalThis !== 'undefined' && globalThis.bus) return globalThis.bus;
+      if (typeof self !== "undefined" && self.bus) return self.bus;
+      if (typeof globalThis !== "undefined" && globalThis.bus)
+        return globalThis.bus;
       // Final fallback: return the controller object (may be uninitialized)
-      if (typeof BusController !== 'undefined' && BusController) return BusController;
+      if (typeof BusController !== "undefined" && BusController)
+        return BusController;
     } catch (e) {}
     return null;
   }
@@ -300,9 +305,12 @@ export class ChatGPTSessionApi {
    */
   async ask(prompt, options = {}, onChunk = () => {}) {
     // For log safety only: prepare a display-limited version without altering the actual prompt
-    const safeDisplayPrompt = (typeof prompt === 'string')
-      ? (prompt.length > 300 ? prompt.slice(0, 300) + '...' : prompt)
-      : '';
+    const safeDisplayPrompt =
+      typeof prompt === "string"
+        ? prompt.length > 300
+          ? prompt.slice(0, 300) + "..."
+          : prompt
+        : "";
     // NOTE: prompt display logging moved to adapter layer to avoid duplicate logs.
     // Keep no-op here to avoid double-logging of the same prompt.
 
@@ -320,25 +328,27 @@ export class ChatGPTSessionApi {
     console.log("[ChatGPT Debug] preparing to check offscreen readiness", {
       ts: Date.now(),
     });
-    
+
     // Give the offscreen document a moment to initialize if this is the first call
     // This helps avoid race conditions during extension startup
     if (!this._offscreenEverReady) {
-      console.log("[ChatGPT Debug] First offscreen check, adding initialization delay");
-      await new Promise(resolve => setTimeout(resolve, 500));
+      console.log(
+        "[ChatGPT Debug] First offscreen check, adding initialization delay"
+      );
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
-    
+
     const __chatgpt_offscreen_poll_start = Date.now();
     // Safely attempt to poll the offscreen/oi readiness via available bus implementation
     const __chatgpt_offscreen_bus = this._getHtosBus();
     let __chatgpt_offscreen_ready = false;
-    
+
     if (__chatgpt_offscreen_bus?.poll) {
       try {
         // Try polling with a longer timeout and retry logic
         const __chatgpt_poll_timeout_ms = 8000; // Give more time for initial setup
         let retries = 2;
-        
+
         while (retries > 0 && !__chatgpt_offscreen_ready) {
           try {
             const pollPromise = __chatgpt_offscreen_bus.poll("startup.oiReady");
@@ -352,16 +362,21 @@ export class ChatGPTSessionApi {
               pollPromise,
               timeoutPromise,
             ]);
-            
+
             if (__chatgpt_offscreen_ready) {
               this._offscreenEverReady = true;
               break;
             }
           } catch (innerError) {
-            console.warn(`[ChatGPT Debug] Poll attempt failed, retries left: ${retries - 1}`, innerError);
+            console.warn(
+              `[ChatGPT Debug] Poll attempt failed, retries left: ${
+                retries - 1
+              }`,
+              innerError
+            );
             retries--;
             if (retries > 0) {
-              await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1s between retries
+              await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait 1s between retries
             }
           }
         }
@@ -383,7 +398,7 @@ export class ChatGPTSessionApi {
       console.warn("[ChatGPT Debug] No bus.poll method available");
       __chatgpt_offscreen_ready = false;
     }
-    
+
     console.log("[ChatGPT Debug] poll startup.oiReady result", {
       result: __chatgpt_offscreen_ready,
       ts: Date.now(),
@@ -404,7 +419,9 @@ export class ChatGPTSessionApi {
         await __bg_bus.poll("startup.oiReady");
         console.log("[ChatGPT Session] Offscreen (oi) is ready");
       } else {
-        console.warn("[ChatGPT Session] No bus.poll available in background context");
+        console.warn(
+          "[ChatGPT Session] No bus.poll available in background context"
+        );
       }
     } catch (error) {
       console.warn(
@@ -431,7 +448,7 @@ export class ChatGPTSessionApi {
 
     // 3) Build ask payload
     // If think-mode requested, force the thinking-capable model slug used by webchat.
-    const selectedModel = options?.think === true ? 'gpt-5-t-mini' : model;
+    const selectedModel = options?.think === true ? "gpt-5-t-mini" : model;
     const body = this._buildAskBody(prompt, {
       model: selectedModel,
       chatId,
@@ -650,17 +667,23 @@ export class ChatGPTSessionApi {
       ...payload,
       headers: {
         ...headers,
-        ...(this._accessToken ? { Authorization: `Bearer ${this._accessToken}` } : {}),
+        ...(this._accessToken
+          ? { Authorization: `Bearer ${this._accessToken}` }
+          : {}),
       },
-      credentials: payload.credentials || 'include',
+      credentials: payload.credentials || "include",
     };
-    
+
     let res;
     try {
       res = await this.fetch(this._url(path), fetchOptions);
     } catch (fetchErr) {
       // Network-level failure (CORS, connection reset, offline, etc.)
-      console.error('[ChatGPT Session] Network fetch failed for', this._url(path), fetchErr);
+      console.error(
+        "[ChatGPT Session] Network fetch failed for",
+        this._url(path),
+        fetchErr
+      );
       // Re-throw so upstream error handling can classify it
       throw fetchErr;
     }
@@ -677,7 +700,11 @@ export class ChatGPTSessionApi {
           },
         });
       } catch (fetchErr) {
-        console.error('[ChatGPT Session] Network fetch retry failed for', this._url(path), fetchErr);
+        console.error(
+          "[ChatGPT Session] Network fetch retry failed for",
+          this._url(path),
+          fetchErr
+        );
         throw fetchErr;
       }
       if (res.status === 401) {
@@ -786,57 +813,51 @@ export class ChatGPTSessionApi {
   }
 
   async _generateProofToken({ seed, difficulty }) {
+    const scripts = await this._getScripts();
+    const dpl = await this._getDpl();
     try {
-      const scripts = await this._getScripts();
-      const dpl = await this._getDpl();
-      try {
-        const __chatgpt_gen_start = Date.now();
-        const __chatgpt_gen_payload = {
-          seed,
-          difficulty,
-          scripts,
-          dpl,
-        };
-        console.log("[ChatGPT Debug] about to call ai.generateProofToken", {
-          ts: Date.now(),
-          payload: { seed, difficulty, scripts: scripts?.length || 0, dpl },
-        });
-        // Use bus send with timeout helper to avoid hanging the session
-        const __chatgpt_gen_res = await this._busSendWithTimeout(
-          "ai.generateProofToken",
-          __chatgpt_gen_payload,
-          { timeoutMs: 15000, retries: 2 }
-        ).catch((e) => {
-          console.error("[ChatGPT Debug] ai.generateProofToken error", e, {
-            ts: Date.now(),
-            dur: Date.now() - __chatgpt_gen_start,
-          });
-          throw e;
-        });
-        console.log("[ChatGPT Debug] ai.generateProofToken response", {
-          res: __chatgpt_gen_res,
+      const __chatgpt_gen_start = Date.now();
+      const __chatgpt_gen_payload = {
+        seed,
+        difficulty,
+        scripts,
+        dpl,
+      };
+      console.log("[ChatGPT Debug] about to call ai.generateProofToken", {
+        ts: Date.now(),
+        payload: { seed, difficulty, scripts: scripts?.length || 0, dpl },
+      });
+      // Use bus send with timeout helper to avoid hanging the session
+      const __chatgpt_gen_res = await this._busSendWithTimeout(
+        "ai.generateProofToken",
+        __chatgpt_gen_payload,
+        { timeoutMs: 15000, retries: 2 }
+      ).catch((e) => {
+        console.error("[ChatGPT Debug] ai.generateProofToken error", e, {
           ts: Date.now(),
           dur: Date.now() - __chatgpt_gen_start,
         });
-        // Validate the response – it must be a non-empty string. Structured
-        // error objects or null/undefined should be treated as failures.
-        if (!__chatgpt_gen_res || typeof __chatgpt_gen_res !== 'string') {
-          const errMsg = (typeof __chatgpt_gen_res === 'object' && __chatgpt_gen_res?.error)
+        throw e;
+      });
+      console.log("[ChatGPT Debug] ai.generateProofToken response", {
+        res: __chatgpt_gen_res,
+        ts: Date.now(),
+        dur: Date.now() - __chatgpt_gen_start,
+      });
+      // Validate the response – it must be a non-empty string. Structured
+      // error objects or null/undefined should be treated as failures.
+      if (!__chatgpt_gen_res || typeof __chatgpt_gen_res !== "string") {
+        const errMsg =
+          typeof __chatgpt_gen_res === "object" && __chatgpt_gen_res?.error
             ? __chatgpt_gen_res.error
-            : 'Invalid proof token response';
-          // Return structured error instead of throwing a raw exception
-          return { ok: false, error: 'powGenerationFailed', details: errMsg };
-        }
-        return { ok: true, token: `${AE_CONFIG.pow.prefix}${__chatgpt_gen_res}` };
-      } catch (e) {
-        // Surface error for upstream handling but return structured shape
-        this._logError("generateProofToken failed", e);
-        return { ok: false, error: (e && e.message) || String(e), details: e?.details || null };
+            : "Invalid proof token response";
+        throw this._createError("powGenerationFailed", errMsg);
       }
+      return `${AE_CONFIG.pow.prefix}${__chatgpt_gen_res}`;
     } catch (e) {
       // Surface error for upstream handling
       this._logError("generateProofToken failed", e);
-      return { ok: false, error: (e && e.message) || String(e), details: e?.details || null };
+      throw e;
     }
   }
 
@@ -963,7 +984,9 @@ export class ChatGPTSessionApi {
   async _injectAEHeaders(headers, requirements) {
     if (!requirements) return headers;
 
-    console.log("[ChatGPT Session] Injecting AE headers directly into request...");
+    console.log(
+      "[ChatGPT Session] Injecting AE headers directly into request..."
+    );
 
     // Sentinel token header
     const sentinelToken = this._get(
@@ -992,33 +1015,14 @@ export class ChatGPTSessionApi {
       }
 
       try {
-        // _generateProofToken may return either a plain string or a structured
-        // object like { ok: true, token: '...' } or { ok: false, error: '...' }.
-        // Normalize all cases to a string token value and fail explicitly when
-        // generation returned a structured failure.
-        const tokenRes = await this._generateProofToken({ seed, difficulty });
-        let tokenVal = null;
-        if (typeof tokenRes === 'string') {
-          tokenVal = tokenRes;
-        } else if (tokenRes && tokenRes.ok === true && typeof tokenRes.token === 'string') {
-          tokenVal = tokenRes.token;
-        } else if (tokenRes && tokenRes.ok === false) {
-          throw new ChatGPTProviderError('powGenerationFailed', tokenRes.details || tokenRes.error || 'PoW generation failed');
-        } else if (tokenRes && typeof tokenRes === 'object' && typeof tokenRes.token === 'string') {
-          // accomodate alternative shapes where token field exists without ok flag
-          tokenVal = tokenRes.token;
-        } else if (tokenRes != null) {
-          // Fallback: coerce to string (safe) but log for visibility
-          try { tokenVal = String(tokenRes); } catch { tokenVal = null; }
-        }
-        if (!tokenVal) {
+        const token = await this._generateProofToken({ seed, difficulty });
+        if (!token) {
           throw new ChatGPTProviderError(
-            'powGenerationFailed',
-            'PoW token generation returned empty value'
+            "powGenerationFailed",
+            "PoW token generation returned null/empty result"
           );
         }
-        // Assign normalized header value (do not inject objects)
-        headers[AE_CONFIG.pow.headerName] = tokenVal;
+        headers[AE_CONFIG.pow.headerName] = token;
         console.log(
           "[ChatGPT Session] PoW token generated and injected directly into headers"
         );
@@ -1051,24 +1055,14 @@ export class ChatGPTSessionApi {
       }
 
       try {
-        // _retrieveArkoseToken may return a string or a structured object.
-        const arkoseRes = await this._retrieveArkoseToken(dx);
-        let arkoseVal = null;
-        if (typeof arkoseRes === 'string') {
-          arkoseVal = arkoseRes;
-        } else if (arkoseRes && arkoseRes.ok === true && typeof arkoseRes.token === 'string') {
-          arkoseVal = arkoseRes.token;
-        } else if (arkoseRes && arkoseRes.ok === false) {
-          throw new ChatGPTProviderError('arkoseRetrievalFailed', arkoseRes.details || arkoseRes.error || 'Arkose retrieval failed');
-        } else if (arkoseRes && typeof arkoseRes === 'object' && typeof arkoseRes.token === 'string') {
-          arkoseVal = arkoseRes.token;
-        } else if (arkoseRes != null) {
-          try { arkoseVal = String(arkoseRes); } catch { arkoseVal = null; }
+        const arkoseToken = await this._retrieveArkoseToken(dx);
+        if (!arkoseToken) {
+          throw new ChatGPTProviderError(
+            "arkoseRetrievalFailed",
+            "Arkose token retrieval returned null/empty result"
+          );
         }
-        if (!arkoseVal) {
-          throw new ChatGPTProviderError('arkoseRetrievalFailed', 'Arkose token retrieval returned empty value');
-        }
-        headers[AE_CONFIG.headerName] = arkoseVal;
+        headers[AE_CONFIG.headerName] = arkoseToken;
         console.log(
           "[ChatGPT Session] Arkose token retrieved and injected directly into headers"
         );
@@ -1088,7 +1082,10 @@ export class ChatGPTSessionApi {
     return headers;
   }
 
-  _buildAskBody(prompt, { model, chatId, parentMessageId, attachments, think = false }) {
+  _buildAskBody(
+    prompt,
+    { model, chatId, parentMessageId, attachments, think = false }
+  ) {
     const msgId =
       utils?.id?.uuid?.() ||
       crypto?.randomUUID?.() ||
@@ -1171,9 +1168,8 @@ export class ChatGPTSessionApi {
   async _safeJson(res) {
     try {
       return await res.json();
-    } catch (e) {
-      // Return structured failure rather than null which can lead to TypeErrors
-      return { ok: false, error: 'invalid_json', details: (e && e.message) || String(e) };
+    } catch {
+      return null;
     }
   }
 }
