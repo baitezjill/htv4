@@ -18,6 +18,10 @@
       "./node_modules/@types",
       "./ui/types"
     ],
+    "paths": {
+      "react-window": ["./ui/types/react-window.d.ts"],
+      "react-window/*": ["./ui/types/react-window.d.ts"]
+    },
     "types": [
       "react",
       "react-dom",

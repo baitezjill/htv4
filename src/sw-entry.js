@@ -18,6 +18,7 @@ import { GeminiProviderController } from "./providers/gemini.js";
 import { ChatGPTProviderController } from "./providers/chatgpt.js";
 import { QwenProviderController } from "./providers/qwen.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
+import { DNRUtils } from "./core/dnr-utils.js";
 
 // Ensure fetch is correctly bound in WorkerGlobalScope to avoid Illegal invocation
 try {
@@ -458,6 +459,78 @@ class SessionManager {
 
 const sessionManager = new SessionManager();
 
+// Helper function to build synthesis prompt
+function buildSynthesisPrompt(originalPrompt, batchResults, synthesisProvider) {
+  const otherResults = Object.entries(batchResults)
+    .filter(([providerId]) => providerId !== synthesisProvider)
+    .map(([providerId, text]) => `**${providerId.toUpperCase()}:**\n${text}`)
+    .join('\n\n');
+
+  return `You are tasked with synthesizing multiple AI responses into a single, comprehensive answer.
+
+**Original User Query:**
+${originalPrompt}
+
+**Responses from other AI models:**
+${otherResults}
+
+**Instructions:**
+- Synthesize the above responses into a single, well-structured answer
+- Identify common themes and reconcile any contradictions
+- Provide the most accurate and helpful response possible
+- Do not simply concatenate the responses - create a cohesive synthesis
+- If the responses disagree, explain the different perspectives and provide your best judgment
+- Maintain a natural, conversational tone
+
+Please provide your synthesized response:`;
+}
+
+// Helper function to build Ensemble prompt (mirrors UI's buildEnsemblerPrompt)
+function buildEnsemblerPrompt(userPrompt, modelOutputsMap) {
+  try {
+    const entries = Object.entries(modelOutputsMap || {}).filter(([_, t]) => (t || '').trim().length > 0);
+    const modelOutputsBlock = entries
+      .map(([providerId, text]) => `=== ${String(providerId).toUpperCase()} ===\n${String(text)}`)
+      .join('\n\n');
+
+    const tpl = `You are not a synthesizer. You are a mirror that reveals what others cannot see.
+Task: Present ALL insights from the models below in their most useful form for decision-making on "(user's Prompt)".
+Critical instruction: Do NOT synthesize into a single answer. Instead, reason internally via this structure—then output ONLY as seamless, narrative prose that implicitly embeds it all:
+Map the landscape — Group similar ideas, preserving tensions and contradictions.
+Surface the invisible — Highlight consensus (2+ models), unique sightings (one model) as natural flow.
+Frame the choices — present alternatives as "If you prioritize X, this path fits because Y."
+Flag the unknowns — Note disagreements/uncertainties as subtle cautions.
+Internal format for reasoning (NEVER output directly):
+What Everyone Sees (consensus)
+Point 1
+Point 2
+The Tensions (disagreements)
+Option A: [suggestion X] implies...
+Option B: [suggestion Y] posits...
+The Unique Insights
+[suggestion]: Overlooked angle...
+The Choice Framework
+If priority [goal 1]: lean toward [option]
+If priority [goal 2]: lean toward [option]
+Confidence Check
+- High confidence: [what's solid]
+- Check this: [what needs verification]
+- Unknown: [what's missing]
+
+
+finally output your response as a narrative explaining everything implicitly to the user, like a natural response to the users prompt fluid, insightful, redacting model names/extraneous details. Build feedback as emergent wisdom—evoke clarity, agency, and subtle awe. Weave your final narrative as representation of a cohesive response of the collective thought  to the users prompt:
+
+User Prompt: ${String(userPrompt || '')}
+
+Model outputs to analyze:
+${modelOutputsBlock}`;
+    return tpl;
+  } catch (e) {
+    console.warn('[HTOS] buildEnsemblerPrompt failed, falling back to raw prompt', e);
+    return String(userPrompt || '');
+  }
+}
+
 // Track last seen text per provider/session so we can send only deltas
 // Keyed as `${sessionId}:${providerId}`
 const lastStreamState = new Map();
@@ -826,20 +899,20 @@ class FaultTolerantOrchestrator {
       const result = await adapter.sendPrompt(
         request,
         (chunk) => {
-          if (signal.aborted) return;
+          if (signal?.aborted) return;
           onPartial(chunk);
         },
         signal
       );
 
-      if (signal.aborted) return;
+      if (signal?.aborted) return;
 
       console.log(
         `[FaultTolerantOrchestrator] Provider ${providerId} completed successfully`
       );
       onComplete(result);
     } catch (error) {
-      if (signal.aborted) return;
+      if (signal?.aborted) return;
       
       console.error(`[FaultTolerantOrchestrator] Provider ${providerId} failed:`, error);
       onError({
@@ -874,13 +947,13 @@ class FaultTolerantOrchestrator {
         const result = await adapter.sendPrompt(
           request,
           (chunk) => {
-            if (signal.aborted) return;
+            if (signal?.aborted) return;
             onPartial(chunk);
           },
           signal
         );
 
-        if (signal.aborted) return;
+        if (signal?.aborted) return;
         onComplete(result);
         return;
       }
@@ -891,13 +964,13 @@ class FaultTolerantOrchestrator {
         providerContext,
         sessionId,
         (chunk) => {
-          if (signal.aborted) return;
+          if (signal?.aborted) return;
           onPartial(chunk);
         },
         signal
       );
 
-      if (signal.aborted) return;
+      if (signal?.aborted) return;
       
       if (result.ok) {
         console.log(`[FaultTolerantOrchestrator] Provider ${providerId} continuation completed successfully`);
@@ -911,7 +984,7 @@ class FaultTolerantOrchestrator {
       }
       
     } catch (error) {
-      if (signal.aborted) return;
+      if (signal?.aborted) return;
       
       console.error(`[FaultTolerantOrchestrator] Provider ${providerId} continuation failed:`, error);
       onError({
@@ -1183,6 +1256,303 @@ chrome.runtime.onConnect.addListener((port) => {
            console.warn('[HTOS] Failed to emit session id to port', e);
          }
        }
+
+      if (message.type === "sendPromptWithSynthesis") {
+        const { prompt, providers, synthesisProvider, sessionId, useThinking } = message;
+        console.log(`[HTOS] Processing synthesis-first prompt for ${providers.length} providers with synthesis by ${synthesisProvider}`);
+
+        // Validate providers
+        const availableProviders = providers.filter(p => providerRegistry.isAvailable(p));
+        if (availableProviders.length === 0) {
+          port.postMessage({ type: "error", data: { message: "No available providers", code: "NO_PROVIDERS" } });
+          return;
+        }
+        // Validate synthesis provider
+        const synthId = String(synthesisProvider || '').toLowerCase();
+        if (!providerRegistry.isAvailable(synthId)) {
+          port.postMessage({ type: "error", data: { message: `Synthesis provider ${synthId} not available`, code: "SYNTHESIS_PROVIDER_UNAVAILABLE" } });
+          return;
+        }
+
+        // Acknowledge start
+        port.postMessage({
+          type: "result",
+          providerId: "system",
+          text: `Gathering sources from ${availableProviders.length} provider(s) before synthesis by ${synthId}...`,
+          ok: true,
+          partial: false
+        });
+
+        const capturedSessionId = sessionId || `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        console.log('[HTOS] Using capturedSessionId for sendPromptWithSynthesis:', capturedSessionId);
+        try { sessionManager.getOrCreateSession(capturedSessionId, String(prompt || "")); } catch {}
+        try { port.postMessage({ type: "session", sessionId: capturedSessionId }); } catch {}
+
+        const roundId = sessionManager.beginRound(capturedSessionId, String(prompt || ""));
+
+        // Track hidden results and progress
+        const totalProviders = availableProviders.length;
+        let completed = 0;
+        let succeeded = 0;
+        const hiddenResults = new Map(); // providerId -> text
+
+        // Execute hidden batch (include synthesizer)
+        await self.faultTolerantOrchestrator.executeParallelFanout(
+          prompt,
+          availableProviders,
+          {
+            sessionId: capturedSessionId,
+            useThinking: Boolean(useThinking),
+            onPartial: () => {}, // suppress partials for hidden batch
+            onProviderComplete: (providerId, result) => {
+              if (result && capturedSessionId) {
+                try { sessionManager.updateProviderContext(capturedSessionId, providerId, result, true, { skipSave: true }); } catch {}
+                try { sessionManager.updateRoundProvider(capturedSessionId, roundId, providerId, result, { skipSave: true }); } catch {}
+              }
+              const text = result?.text || '';
+              hiddenResults.set(providerId, text);
+              completed += 1;
+              if (result?.ok !== false && (text || '').trim().length > 0) succeeded += 1;
+              // Emit revealable snapshot and progress
+              try {
+                port.postMessage({ type: 'HIDDEN_BATCH_RESULT', sessionId: capturedSessionId, providerId, text, ok: result?.ok !== false, meta: result?.meta || {} });
+                port.postMessage({ type: 'HIDDEN_BATCH_PROGRESS', sessionId: capturedSessionId, payload: { completed, total: totalProviders, succeeded } });
+              } catch {}
+            },
+            onError: (providerId, error) => {
+              completed += 1;
+              try {
+                port.postMessage({ type: 'HIDDEN_BATCH_RESULT', sessionId: capturedSessionId, providerId, text: '', ok: false, error: error?.message || 'Provider error' });
+                port.postMessage({ type: 'HIDDEN_BATCH_PROGRESS', sessionId: capturedSessionId, payload: { completed, total: totalProviders, succeeded } });
+              } catch {}
+            },
+            onAllComplete: async (resultsMap, errorsMap) => {
+              try {
+                const successCount = Array.from(resultsMap.values())
+                  .filter(r => r && r.ok !== false && (r.text || '').trim().length > 0)
+                  .length;
+                const errorCount = (errorsMap && typeof errorsMap.size === 'number')
+                  ? errorsMap.size
+                  : Array.from(errorsMap.values()).length;
+                // Fail count should include both explicit errors and non-text/empty successes
+                // This simplifies to totalProviders - successCount
+                const failCount = Math.max(0, totalProviders - successCount);
+
+                try {
+                  // Build batch results object for UI to reveal sources under synthesis
+                  const batchResults = {};
+                  for (const pid of availableProviders) {
+                    const res = resultsMap.get(pid);
+                    const err = (errorsMap && typeof errorsMap.get === 'function') ? errorsMap.get(pid) : undefined;
+                    const txt = (res && typeof res.text === 'string') ? res.text : (hiddenResults.get(pid) || '');
+                    const ok = !err && (res ? (res.ok !== false) : ((txt || '').trim().length > 0));
+                    batchResults[pid] = {
+                      providerId: pid,
+                      text: txt || '',
+                      status: ok ? 'completed' : 'error',
+                      meta: (res && res.meta) ? res.meta : {}
+                    };
+                  }
+
+                  // Emit hidden batch complete with both payload and top-level batchResults for wider UI compatibility
+                  port.postMessage({
+                    type: 'HIDDEN_BATCH_COMPLETE',
+                    sessionId: capturedSessionId,
+                    batchResults,
+                    payload: { successCount, failCount, errorCount, batchResults }
+                  });
+                } catch (emitErr) {
+                  console.warn('[HTOS] Failed to emit HIDDEN_BATCH_COMPLETE', emitErr);
+                }
+
+                // Build ok-text map for gating
+                const okTextsByProvider = new Map();
+                for (const pid of availableProviders) {
+                  const res = resultsMap.get(pid);
+                  const txt = res?.text || hiddenResults.get(pid) || '';
+                  if (res && res.ok !== false && (txt || '').trim().length > 0) okTextsByProvider.set(pid, txt);
+                }
+
+                const otherOk = Array.from(okTextsByProvider.keys()).filter(pid => pid !== synthId);
+                // Proceed to synthesis as long as we have at least one non-synth source.
+                // Do NOT gate on synthesizer producing batch text; synthesis can start a new turn.
+                const enoughSources = (otherOk.length >= 1);
+
+                if (!enoughSources) {
+                  // Fallback to normal batch round (no synthesis)
+                  try { port.postMessage({ type: 'SYNTHESIS_SKIPPED_NO_SOURCES', sessionId: capturedSessionId, payload: { synthProvider: synthId, otherCount: otherOk.length } }); } catch {}
+
+                  try { sessionManager.completeRound(capturedSessionId, roundId, { skipSave: true }); } catch {}
+                  const stepResults = Array.from(resultsMap.entries()).map(([providerId, res]) => ({
+                    providerId,
+                    ok: res?.ok !== false,
+                    text: res?.text || '',
+                    meta: res?.meta || {}
+                  }));
+                  const responses = Object.fromEntries(stepResults.map(r => [r.providerId, { text: r.text }]));
+                  port.postMessage({ type: 'WORKFLOW_COMPLETE', sessionId: capturedSessionId, stepResults, results: responses, payload: { stepResults, responses } });
+                  try { sessionManager.saveSession(capturedSessionId).catch(() => {}); } catch {}
+                  return;
+                }
+
+                // Proceed to synthesis using orchestrator meta prompt
+                const providerContexts = sessionManager.getProviderContexts(capturedSessionId) || {};
+                const otherResults = otherOk.map(pid => ({ providerId: pid, text: okTextsByProvider.get(pid) || '' }));
+
+                // Build synthesizer meta for continuation when possible
+                const meta = {};
+                const synthMeta = providerContexts[synthId]?.meta || {};
+                if (synthId === 'claude' && (synthMeta.chatId || synthMeta.threadUrl)) meta.chatId = synthMeta.chatId || synthMeta.threadUrl;
+                else if (synthId === 'gemini' && synthMeta.cursor) meta.cursor = synthMeta.cursor;
+                else if (synthId === 'chatgpt') {
+                  if (synthMeta.conversationId) meta.conversationId = synthMeta.conversationId;
+                  if (synthMeta.parentMessageId) meta.parentMessageId = synthMeta.parentMessageId;
+                  if (synthMeta.messageId) meta.messageId = synthMeta.messageId;
+                  if (Boolean(useThinking)) meta.useThinking = true; // optional think-mode for ChatGPT
+                } else if (synthId === 'qwen') {
+                  if (synthMeta.sessionId) meta.sessionId = synthMeta.sessionId;
+                  if (synthMeta.parentMsgId) meta.parentMsgId = synthMeta.parentMsgId;
+                }
+
+                try { port.postMessage({ type: 'SYNTHESIS_STARTING', sessionId: capturedSessionId, payload: { provider: synthId, sources: otherResults.length } }); } catch {}
+
+                // Execute synthesis first
+                const res = await self.orchestrator.batchPrompt(String(prompt || ''), {
+                  synthesis: {
+                    only: true,
+                    providerId: synthId,
+                    otherResults,
+                    meta,
+                  },
+                  onPartial: (_pid, chunk) => {
+                    if (chunk && chunk.partial) {
+                      const delta = makeDelta(capturedSessionId, synthId, chunk.text || '');
+                      if (delta) {
+                        try { port.postMessage({ type: 'SYNTHESIS_PARTIAL', sessionId: capturedSessionId, payload: { provider: synthId, text: delta } }); } catch {}
+                      }
+                    }
+                  }
+                });
+
+                const s = res?.synthesis || null;
+                const synthesisText = s?.text || '';
+                
+                // Persist synthesized result and its sources
+                try {
+                  sessionManager.updateProviderContext(capturedSessionId, synthId, { text: synthesisText, meta: { ...(s?.meta || {}), sources: Object.fromEntries(hiddenResults) } }, true, { skipSave: true });
+                  sessionManager.updateRoundProvider(capturedSessionId, roundId, synthId, { text: synthesisText, meta: { ...(s?.meta || {}), sources: Object.fromEntries(hiddenResults) } }, { skipSave: true });
+                } catch {}
+
+                // Emit synthesis completion
+                try { port.postMessage({ type: 'SYNTHESIS_COMPLETE', sessionId: capturedSessionId, providerId: synthId, text: synthesisText, ok: s?.ok !== false, payload: [{ provider: synthId, response: synthesisText }] }); } catch {}
+
+                // Now run ensemble AFTER synthesis completes (sequential execution)
+                let ensembleProviderId = 'gemini';
+                if (synthId === 'gemini') {
+                  if (availableProviders.includes('claude')) ensembleProviderId = 'claude';
+                  else if (availableProviders.includes('chatgpt')) ensembleProviderId = 'chatgpt';
+                  else {
+                    const fallback = availableProviders.find(pid => pid !== synthId);
+                    if (fallback) ensembleProviderId = fallback;
+                  }
+                }
+                const runEnsemble = ensembleProviderId && ensembleProviderId !== synthId && providerRegistry.isAvailable(ensembleProviderId);
+                
+                if (runEnsemble) {
+                  // Include synthesis output in ensemble inputs
+                  const modelOutputsForEnsemble = {
+                    [synthId]: synthesisText,
+                    ...Object.fromEntries(
+                      otherResults
+                        .filter(r => r.providerId !== ensembleProviderId)
+                        .map(r => [r.providerId, r.text])
+                    )
+                  };
+                  const ensemblePrompt = buildEnsemblerPrompt(String(prompt || ''), modelOutputsForEnsemble);
+
+                  try {
+                    const ensembleResult = await self.faultTolerantOrchestrator._executeProviderRequest(
+                      ensembleProviderId,
+                      ensemblePrompt,
+                      capturedSessionId,
+                      new AbortController().signal,
+                      {
+                        onPartial: () => {},
+                        onComplete: (result) => {
+                          const text = result?.text || '';
+                          try {
+                            sessionManager.updateProviderContext(
+                              capturedSessionId,
+                              ensembleProviderId,
+                              { text, meta: { ...(result?.meta || {}), ensembleOf: Object.keys(modelOutputsForEnsemble || {}) } },
+                              true,
+                              { skipSave: true }
+                            );
+                            sessionManager.updateRoundProvider(
+                              capturedSessionId,
+                              roundId,
+                              ensembleProviderId,
+                              { text, meta: { ...(result?.meta || {}), ensembleOf: Object.keys(modelOutputsForEnsemble || {}) } },
+                              { skipSave: true }
+                            );
+                          } catch {}
+
+                          try {
+                            port.postMessage({
+                              type: 'ENSEMBLE_COMPLETE',
+                              sessionId: capturedSessionId,
+                              providerId: ensembleProviderId,
+                              text,
+                              ok: result?.ok !== false,
+                              meta: { ...(result?.meta || {}), ensembleOf: Object.keys(modelOutputsForEnsemble || {}) }
+                            });
+                          } catch (emitErr) {
+                            console.warn('[HTOS] Failed to emit ENSEMBLE_COMPLETE', emitErr);
+                          }
+                        },
+                        onError: (err) => {
+                          try {
+                            port.postMessage({ type: 'ENSEMBLE_COMPLETE', sessionId: capturedSessionId, providerId: ensembleProviderId, text: '', ok: false, error: err?.message || 'Ensemble error' });
+                          } catch {}
+                        }
+                      }
+                    );
+                  } catch (ensembleErr) {
+                    console.warn('[HTOS] Ensemble execution failed', ensembleErr);
+                    try {
+                      port.postMessage({ type: 'ENSEMBLE_COMPLETE', sessionId: capturedSessionId, providerId: ensembleProviderId, text: '', ok: false, error: ensembleErr?.message || 'Ensemble error' });
+                    } catch {}
+                  }
+                }
+
+                // After both synthesis and ensemble complete, reveal hidden batch outputs
+                try {
+                  port.postMessage({
+                    type: 'HIDDEN_BATCH_REVEAL',
+                    sessionId: capturedSessionId,
+                    batchResults: Object.fromEntries(hiddenResults),
+                    payload: { batchResults: Object.fromEntries(hiddenResults) }
+                  });
+                } catch {}
+
+                // Wrap up
+                try { sessionManager.completeRound(capturedSessionId, roundId, { skipSave: true }); } catch {}
+                try { sessionManager.saveSession(capturedSessionId).catch(() => {}); } catch {}
+                try { port.postMessage({ type: 'WORKFLOW_COMPLETE', sessionId: capturedSessionId, stepResults: [{ providerId: synthId, ok: s?.ok !== false, text: synthesisText }], results: { [synthId]: { text: synthesisText } } }); } catch {}
+
+              } catch (e) {
+                console.error('[HTOS] synthesis-first onAllComplete failed', e);
+                // As a last resort, try to finalize the round and surface batch-only results
+                try { sessionManager.completeRound(capturedSessionId, roundId, { skipSave: true }); } catch {}
+                const batchOnly = Object.fromEntries(Array.from(hiddenResults.entries()).map(([pid, text]) => [pid, { text }]));
+                try { port.postMessage({ type: 'WORKFLOW_COMPLETE', sessionId: capturedSessionId, results: batchOnly }); } catch {}
+              }
+            }
+          }
+        );
+
+        console.log(`[HTOS] Synthesis-first workflow initiated with session: ${capturedSessionId}`);
+      }
 
       if (message.type === "continue") {
         const { prompt, providers, sessionId, providerContexts, useThinking } = message;
@@ -1633,6 +2003,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
     });
 
+
     port.onDisconnect.addListener(() => {
       console.log("[HTOS] Port disconnected:", port.name);
       eventRouter.unregisterConnection(connectionId);
@@ -1702,6 +2073,15 @@ async function initializeGlobalInfrastructure() {
       if (typeof ArkoseController !== "undefined") {
         await ArkoseController.init();
         console.log("[HTOS] ✓ ArkoseController initialized");
+      }
+
+      // Ensure Qwen DNR rules are cleared on startup to avoid stale/orphaned rules
+      try {
+        await DNRUtils.initialize(); // idempotent
+        await DNRUtils.removeProviderRules('qwen');
+        console.log('[HTOS] ✓ Cleared Qwen DNR rules at startup');
+      } catch (e) {
+        console.warn('[HTOS] Failed to clear Qwen DNR rules at startup', e);
       }
 
       // Register a DNR rule to allow embedding the local oi host in the offscreen document

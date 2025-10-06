@@ -98,108 +98,112 @@ const TurnActionBar = ({
         marginTop: '8px',
       }}
     >
-      {/* Synthesize with */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ color: '#94a3b8', fontSize: 12 }}>Synthesize with:</span>
-        {LLM_PROVIDERS_CONFIG.map(p => {
-          const isSelected = !!synthSelected[p.id];
-          const block = eligibleMap[p.id];
-          const isDisabled = !!block?.disabled;
-          const title = block?.reason ? `${p.name}: ${block.reason}` : `Include ${p.name}`;
-          return renderToggle(p.id, isSelected, () => onToggleSynth(roundUserTurnId, p.id), isDisabled, title);
-        })}
-        {/* Think-mode toggle for ChatGPT synthesis */}
-        <button
-          onClick={() => onToggleThinkSynthForChatGPT?.(roundUserTurnId)}
-          disabled={isLoading}
-          title={`Think mode for ChatGPT ${thinkSynthForChatGPT ? 'ON' : 'OFF'}`}
-          style={{
-            padding: '6px 10px',
-            borderRadius: 999,
-            border: '1px solid #475569',
-            background: thinkSynthForChatGPT ? 'rgba(99,102,241,0.2)' : '#0f172a',
-            color: '#e2e8f0',
-            fontSize: 12,
-            cursor: isLoading ? 'not-allowed' : 'pointer',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6
-          }}
-        >
-          🤔 ChatGPT Think: {thinkSynthForChatGPT ? 'ON' : 'OFF'}
-        </button>
-        <div style={{ flex: 1 }} />
-        <button
-          onClick={() => onRunSynthesis(roundUserTurnId)}
-          disabled={isLoading || disableSynthesisRun}
-          style={{
-            padding: '6px 10px',
-            borderRadius: 8,
-            border: '1px solid #475569',
-            background: '#334155',
-            color: '#e2e8f0',
-            fontSize: 12,
-            cursor: (isLoading || disableSynthesisRun) ? 'not-allowed' : 'pointer'
-          }}
-        >
-          ✨ Run
-        </button>
-      </div>
+      {/** Legacy "Synthesize with" controls temporarily disabled */}
+      {false && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ color: '#94a3b8', fontSize: 12 }}>Synthesize with:</span>
+          {LLM_PROVIDERS_CONFIG.map(p => {
+            const isSelected = !!synthSelected[p.id];
+            const block = eligibleMap[p.id];
+            const isDisabled = !!block?.disabled;
+            const title = block?.reason ? `${p.name}: ${block.reason}` : `Include ${p.name}`;
+            return renderToggle(p.id, isSelected, () => onToggleSynth(roundUserTurnId, p.id), isDisabled, title);
+          })}
+          {/* Think-mode toggle for ChatGPT synthesis */}
+          <button
+            onClick={() => onToggleThinkSynthForChatGPT?.(roundUserTurnId)}
+            disabled={isLoading}
+            title={`Think mode for ChatGPT ${thinkSynthForChatGPT ? 'ON' : 'OFF'}`}
+            style={{
+              padding: '6px 10px',
+              borderRadius: 999,
+              border: '1px solid #475569',
+              background: thinkSynthForChatGPT ? 'rgba(99,102,241,0.2)' : '#0f172a',
+              color: '#e2e8f0',
+              fontSize: 12,
+              cursor: isLoading ? 'not-allowed' : 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6
+            }}
+          >
+            🤔 ChatGPT Think: {thinkSynthForChatGPT ? 'ON' : 'OFF'}
+          </button>
+          <div style={{ flex: 1 }} />
+          <button
+            onClick={() => onRunSynthesis(roundUserTurnId)}
+            disabled={isLoading || disableSynthesisRun}
+            style={{
+              padding: '6px 10px',
+              borderRadius: 8,
+              border: '1px solid #475569',
+              background: '#334155',
+              color: '#e2e8f0',
+              fontSize: 12,
+              cursor: (isLoading || disableSynthesisRun) ? 'not-allowed' : 'pointer'
+            }}
+          >
+            ✨ Run
+          </button>
+        </div>
+      )}
 
-      {/* Ensemble with (single-select) */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ color: '#94a3b8', fontSize: 12 }}>Ensemble with:</span>
-        {LLM_PROVIDERS_CONFIG.map(p => {
-          const isSelected = ensembleSelected === p.id;
-          const block = ensembleEligibleMap[p.id];
-          const isDisabled = !!block?.disabled;
-          const title = block?.reason ? `${p.name}: ${block.reason}` : `Choose ${p.name} to ensemble`;
-          return renderToggle(
-            p.id,
-            isSelected,
-            () => onSelectEnsemble(roundUserTurnId, p.id),
-            isDisabled,
-            title,
-            '#10b981'
-          );
-        })}
-        {/* Think-mode toggle for ChatGPT ensemble */}
-        <button
-          onClick={() => onToggleThinkEnsembleForChatGPT?.(roundUserTurnId)}
-          disabled={isLoading}
-          title={`Think mode for ChatGPT ${thinkEnsembleForChatGPT ? 'ON' : 'OFF'}`}
-          style={{
-            padding: '6px 10px',
-            borderRadius: 999,
-            border: '1px solid #475569',
-            background: thinkEnsembleForChatGPT ? 'rgba(99,102,241,0.2)' : '#0f172a',
-            color: '#e2e8f0',
-            fontSize: 12,
-            cursor: isLoading ? 'not-allowed' : 'pointer',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6
-          }}
-        >
-          🤔 ChatGPT Think: {thinkEnsembleForChatGPT ? 'ON' : 'OFF'}
-        </button>
-        <div style={{ flex: 1 }} />
-        <button
-          onClick={() => onRunEnsemble(roundUserTurnId)}
-          disabled={isLoading || !ensembleSelected || disableEnsembleRun}
-          style={{
-            padding: '6px 10px',
-            borderRadius: 8,
-            border: '1px solid #475569',
-            background: '#334155',
-            color: '#e2e8f0',
-            fontSize: 12,
-            cursor: (isLoading || !ensembleSelected || disableEnsembleRun) ? 'not-allowed' : 'pointer'
-          }}
-        >
-          🧩 Run Ensemble
-        </button>
-      </div>
+      {/** Legacy "Ensemble with" controls temporarily disabled */}
+      {false && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ color: '#94a3b8', fontSize: 12 }}>Ensemble with:</span>
+          {LLM_PROVIDERS_CONFIG.map(p => {
+            const isSelected = ensembleSelected === p.id;
+            const block = ensembleEligibleMap[p.id];
+            const isDisabled = !!block?.disabled;
+            const title = block?.reason ? `${p.name}: ${block.reason}` : `Choose ${p.name} to ensemble`;
+            return renderToggle(
+              p.id,
+              isSelected,
+              () => onSelectEnsemble(roundUserTurnId, p.id),
+              isDisabled,
+              title,
+              '#10b981'
+            );
+          })}
+          {/* Think-mode toggle for ChatGPT ensemble */}
+          <button
+            onClick={() => onToggleThinkEnsembleForChatGPT?.(roundUserTurnId)}
+            disabled={isLoading}
+            title={`Think mode for ChatGPT ${thinkEnsembleForChatGPT ? 'ON' : 'OFF'}`}
+            style={{
+              padding: '6px 10px',
+              borderRadius: 999,
+              border: '1px solid #475569',
+              background: thinkEnsembleForChatGPT ? 'rgba(99,102,241,0.2)' : '#0f172a',
+              color: '#e2e8f0',
+              fontSize: 12,
+              cursor: isLoading ? 'not-allowed' : 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6
+            }}
+          >
+            🤔 ChatGPT Think: {thinkEnsembleForChatGPT ? 'ON' : 'OFF'}
+          </button>
+          <div style={{ flex: 1 }} />
+          <button
+            onClick={() => onRunEnsemble(roundUserTurnId)}
+            disabled={isLoading || !ensembleSelected || disableEnsembleRun}
+            style={{
+              padding: '6px 10px',
+              borderRadius: 8,
+              border: '1px solid #475569',
+              background: '#334155',
+              color: '#e2e8f0',
+              fontSize: 12,
+              cursor: (isLoading || !ensembleSelected || disableEnsembleRun) ? 'not-allowed' : 'pointer'
+            }}
+          >
+            🧩 Run Ensemble
+          </button>
+        </div>
+      )}
     </div>
   );
 };

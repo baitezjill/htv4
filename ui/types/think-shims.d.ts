@@ -3,7 +3,7 @@ declare module "../src/think/lib/think/computeThinkFlag.js" {
   export interface ComputeThinkFlagArgs {
     modeThinkButtonOn: boolean;
     input: string;
-    inputFlags?: string | null;
+    inputFlags?: string[] | string | null;
   }
   export function computeThinkFlag(args: ComputeThinkFlagArgs): boolean;
 }

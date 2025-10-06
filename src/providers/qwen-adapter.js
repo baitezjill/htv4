@@ -12,7 +12,7 @@ export class QwenAdapter {
             needsOffscreen: false,
             supportsStreaming: true,
             supportsContinuation: true,
-            synthesis: false,
+            synthesis: true,
         };
         this.controller = controller;
     }
@@ -22,10 +22,19 @@ export class QwenAdapter {
         let aggregatedText = '';
         let responseContext = {};
 
+        // Default to continuation when prior context exists (sessionId/parentMsgId),
+        // matching behavior of other adapters which reuse meta for continuations.
+        const meta = req?.meta || {};
+        const hasContinuation = !!(meta.sessionId || meta.parentMsgId);
+
         try {
             const result = await this.controller.qwenSession.ask(
                 req.originalPrompt,
-                { signal },
+                {
+                    signal,
+                    sessionId: hasContinuation ? meta.sessionId : undefined,
+                    parentMsgId: hasContinuation ? meta.parentMsgId : undefined,
+                },
                 (partial) => {
                     if (!this.capabilities.supportsStreaming || !onChunk) return;
                     aggregatedText = partial.text || aggregatedText;
@@ -63,6 +72,7 @@ export class QwenAdapter {
                     error: error.toString(),
                     details: error.details,
                     suppressed: classification.suppressed,
+                    ...meta,
                 },
             };
         }

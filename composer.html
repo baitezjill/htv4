@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Composer Mode - Where AI Output Becomes Your Work</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0a0a;
+      color: #ffffff;
+      overflow-x: hidden;
+    }
+
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      padding: 2rem;
+      position: relative;
+      background: radial-gradient(ellipse at center, #1a1a2e 0%, #0a0a0a 70%);
+    }
+
+    .animated-bg {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      top: 0;
+      left: 0;
+      opacity: 0.3;
+      z-index: 0;
+    }
+
+    .grid-line {
+      position: absolute;
+      background: linear-gradient(90deg, transparent, #4a9eff, transparent);
+      animation: slide 8s infinite;
+    }
+
+    .grid-line:nth-child(1) { width: 100%; height: 2px; top: 20%; animation-delay: 0s; }
+    .grid-line:nth-child(2) { width: 100%; height: 2px; top: 50%; animation-delay: 2s; }
+    .grid-line:nth-child(3) { width: 100%; height: 2px; top: 80%; animation-delay: 4s; }
+    .grid-line:nth-child(4) { width: 2px; height: 100%; left: 30%; animation: slideVertical 6s infinite; }
+    .grid-line:nth-child(5) { width: 2px; height: 100%; left: 70%; animation: slideVertical 6s infinite 2s; }
+
+    @keyframes slide {
+      0%, 100% { opacity: 0; transform: translateX(-100%); }
+      50% { opacity: 1; transform: translateX(100%); }
+    }
+
+    @keyframes slideVertical {
+      0%, 100% { opacity: 0; transform: translateY(-100%); }
+      50% { opacity: 1; transform: translateY(100%); }
+    }
+
+    .hero-content {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      max-width: 1200px;
+    }
+
+    .eyebrow {
+      font-size: 0.875rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: #4a9eff;
+      margin-bottom: 1.5rem;
+      font-weight: 600;
+      animation: fadeInUp 0.8s ease-out;
+    }
+
+    h1 {
+      font-size: clamp(2.5rem, 8vw, 5.5rem);
+      font-weight: 700;
+      line-height: 1.1;
+      margin-bottom: 1.5rem;
+      background: linear-gradient(135deg, #ffffff 0%, #a0a0a0 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      animation: fadeInUp 0.8s ease-out 0.2s backwards;
+    }
+
+    .subtitle {
+      font-size: clamp(1.25rem, 3vw, 1.75rem);
+      color: #b0b0b0;
+      margin-bottom: 3rem;
+      line-height: 1.5;
+      animation: fadeInUp 0.8s ease-out 0.4s backwards;
+    }
+
+    .cta-group {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+      flex-wrap: wrap;
+      animation: fadeInUp 0.8s ease-out 0.6s backwards;
+    }
+
+    .btn {
+      padding: 1rem 2.5rem;
+      font-size: 1.125rem;
+      font-weight: 600;
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      text-decoration: none;
+      display: inline-block;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #4a9eff 0%, #357abd 100%);
+      color: white;
+      box-shadow: 0 10px 30px rgba(74, 158, 255, 0.3);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 15px 40px rgba(74, 158, 255, 0.4);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.05);
+      color: white;
+      border: 2px solid rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(10px);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.2);
+      transform: translateY(-2px);
+    }
+
+    @keyframes fadeInUp {
+      from {
+        opacity: 0;
+        transform: translateY(30px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .demo-container {
+      margin-top: 5rem;
+      position: relative;
+      animation: fadeInUp 0.8s ease-out 0.8s backwards;
+    }
+
+    .demo-window {
+      background: rgba(20, 20, 30, 0.8);
+      border-radius: 20px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 2rem;
+      backdrop-filter: blur(20px);
+      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    .demo-visual {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 1.5rem;
+      min-height: 300px;
+    }
+
+    .canvas-area {
+      background: rgba(40, 40, 50, 0.5);
+      border-radius: 12px;
+      padding: 1.5rem;
+      border: 2px dashed rgba(74, 158, 255, 0.3);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .canvas-placeholder {
+      color: #606060;
+      font-size: 0.875rem;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+    }
+
+    .content-block {
+      background: rgba(74, 158, 255, 0.15);
+      border: 1px solid rgba(74, 158, 255, 0.3);
+      border-radius: 8px;
+      padding: 1rem;
+      margin-bottom: 0.75rem;
+      animation: slideIn 0.5s ease-out;
+      cursor: grab;
+      transition: all 0.3s ease;
+    }
+
+    .content-block:hover {
+      background: rgba(74, 158, 255, 0.25);
+      transform: scale(1.02);
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateX(-20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateX(0);
+      }
+    }
+
+    .rails-area {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .rail-item {
+      background: rgba(60, 60, 80, 0.5);
+      border-radius: 8px;
+      padding: 0.75rem;
+      font-size: 0.75rem;
+      color: #a0a0a0;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+
+    .rail-item:hover {
+      background: rgba(80, 80, 100, 0.6);
+      border-color: rgba(74, 158, 255, 0.3);
+      transform: translateX(-5px);
+    }
+
+    .rail-label {
+      font-weight: 600;
+      color: #4a9eff;
+      font-size: 0.625rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 0.25rem;
+    }
+
+    .problem-section {
+      padding: 8rem 2rem;
+      background: linear-gradient(180deg, #0a0a0a 0%, #1a1a2e 50%, #0a0a0a 100%);
+    }
+
+    .section-content {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .section-title {
+      font-size: clamp(2rem, 5vw, 3.5rem);
+      margin-bottom: 2rem;
+      background: linear-gradient(135deg, #ffffff 0%, #b0b0b0 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .problem-text {
+      font-size: 1.375rem;
+      line-height: 1.8;
+      color: #b0b0b0;
+      margin-bottom: 2rem;
+    }
+
+    .highlight-box {
+      background: rgba(74, 158, 255, 0.1);
+      border-left: 4px solid #4a9eff;
+      padding: 2rem;
+      border-radius: 12px;
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: #ffffff;
+      margin: 3rem 0;
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 2rem;
+      margin-top: 4rem;
+    }
+
+    .feature-card {
+      background: rgba(20, 20, 30, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 2rem;
+      transition: all 0.3s ease;
+    }
+
+    .feature-card:hover {
+      transform: translateY(-10px);
+      border-color: rgba(74, 158, 255, 0.5);
+      box-shadow: 0 20px 50px rgba(74, 158, 255, 0.2);
+    }
+
+    .feature-icon {
+      font-size: 2.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .feature-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+      color: #ffffff;
+    }
+
+    .feature-description {
+      color: #b0b0b0;
+      line-height: 1.6;
+    }
+
+    .workflow-section {
+      padding: 8rem 2rem;
+      background: #0a0a0a;
+    }
+
+    .workflow-steps {
+      display: flex;
+      flex-direction: column;
+      gap: 3rem;
+      margin-top: 4rem;
+    }
+
+    .workflow-step {
+      display: grid;
+      grid-template-columns: 100px 1fr;
+      gap: 2rem;
+      align-items: start;
+    }
+
+    .step-number {
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #4a9eff 0%, #357abd 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2rem;
+      font-weight: 700;
+      box-shadow: 0 10px 30px rgba(74, 158, 255, 0.3);
+    }
+
+    .step-content h3 {
+      font-size: 1.75rem;
+      margin-bottom: 1rem;
+      color: #ffffff;
+    }
+
+    .step-content p {
+      font-size: 1.125rem;
+      color: #b0b0b0;
+      line-height: 1.7;
+    }
+
+    .cta-section {
+      padding: 8rem 2rem;
+      background: radial-gradient(ellipse at center, #1a1a2e 0%, #0a0a0a 70%);
+      text-align: center;
+    }
+
+    .cta-title {
+      font-size: clamp(2rem, 5vw, 3.5rem);
+      margin-bottom: 1.5rem;
+      background: linear-gradient(135deg, #ffffff 0%, #b0b0b0 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .cta-subtitle {
+      font-size: 1.375rem;
+      color: #b0b0b0;
+      margin-bottom: 3rem;
+      max-width: 700px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    @media (max-width: 768px) {
+      .demo-visual {
+        grid-template-columns: 1fr;
+      }
+
+      .workflow-step {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+      }
+
+      .step-number {
+        margin: 0 auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <section class="hero">
+    <div class="animated-bg">
+      <div class="grid-line"></div>
+      <div class="grid-line"></div>
+      <div class="grid-line"></div>
+      <div class="grid-line"></div>
+      <div class="grid-line"></div>
+    </div>
+    
+    <div class="hero-content">
+      <div class="eyebrow">The Next Evolution in AI Workflow</div>
+      <h1>Where AI Output<br>Becomes Your Work</h1>
+      <p class="subtitle">Stop copying and pasting. Start composing. Turn multiple AI responses into polished, publish-ready documents—with surgical precision.</p>
+      
+      <div class="cta-group">
+        <button class="btn btn-primary">Get Early Access</button>
+        <button class="btn btn-secondary">Watch Demo</button>
+      </div>
+
+      <div class="demo-container">
+        <div class="demo-window">
+          <div class="demo-visual">
+            <div class="canvas-area">
+              <div class="canvas-placeholder">
+                Your canvas<br>
+                <span style="font-size: 0.75rem; opacity: 0.5;">Drag content here</span>
+              </div>
+              <div class="content-block" style="animation-delay: 2s;">
+                The transition from "AI gave me an answer" to "I have a finished document" is...
+              </div>
+              <div class="content-block" style="animation-delay: 2.3s;">
+                Composer Mode is your finishing workshop where you take AI responses and...
+              </div>
+            </div>
+            
+            <div class="rails-area">
+              <div class="rail-item">
+                <div class="rail-label">GPT-4</div>
+                Understanding the workspace paradigm shift...
+              </div>
+              <div class="rail-item">
+                <div class="rail-label">Claude</div>
+                The key innovation lies in granular control...
+              </div>
+              <div class="rail-item">
+                <div class="rail-label">Gemini</div>
+                Think of it as conducting an orchestra...
+              </div>
+              <div class="rail-item">
+                <div class="rail-label">Synthesis</div>
+                Composer Mode bridges the gap between...
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="problem-section">
+    <div class="section-content">
+      <h2 class="section-title">The Problem Everyone Faces</h2>
+      <p class="problem-text">
+        You get brilliant answers from ChatGPT, Claude, or Gemini. Then you copy-paste into Google Docs. You manually stitch together the best parts. You lose track of which piece came from where. You switch between five different tabs just to turn AI output into something publishable.
+      </p>
+      <div class="highlight-box">
+        The transition from "AI gave me an answer" to "I have a finished document" is broken.
+      </div>
+      <p class="problem-text">
+        That's the gap Composer Mode fills. It's not another AI chatbot. It's the missing piece between AI generation and human publishing.
+      </p>
+    </div>
+  </section>
+
+  <section class="workflow-section">
+    <div class="section-content">
+      <h2 class="section-title">How It Works</h2>
+      
+      <div class="workflow-steps">
+        <div class="workflow-step">
+          <div class="step-number">1</div>
+          <div class="step-content">
+            <h3>Generate from Multiple AI Models</h3>
+            <p>Get responses from GPT, Claude, and Gemini simultaneously. See different perspectives, approaches, and explanations side by side in your rails.</p>
+          </div>
+        </div>
+
+        <div class="workflow-step">
+          <div class="step-number">2</div>
+          <div class="step-content">
+            <h3>Drag with Surgical Precision</h3>
+            <p>Grab entire responses, specific paragraphs, individual sentences, or even single words. You control the granularity. It's your composition.</p>
+          </div>
+        </div>
+
+        <div class="workflow-step">
+          <div class="step-number">3</div>
+          <div class="step-content">
+            <h3>Compose Your Masterpiece</h3>
+            <p>Drop pieces onto your canvas. They snap intelligently into place. Mix the best from each model. Arrange, blend, and refine until it's exactly right.</p>
+          </div>
+        </div>
+
+        <div class="workflow-step">
+          <div class="step-number">4</div>
+          <div class="step-content">
+            <h3>Auto-Polish & Ship</h3>
+            <p>Hit polish for a final pass that smooths transitions and fixes grammar—without changing your core content. Then export and publish. Done.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="problem-section">
+    <div class="section-content">
+      <h2 class="section-title">Built for Modern Makers</h2>
+      
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">⚡</div>
+          <h3 class="feature-title">Speed Without Sacrifice</h3>
+          <p class="feature-description">Work at the speed of selection, not creation. Get AI velocity with human precision. No more "80% right but needs rewriting."</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🎯</div>
+          <h3 class="feature-title">Multi-Model Intelligence</h3>
+          <p class="feature-description">Pick GPT's answer, Claude's clarity, and Gemini's creativity—all in one document. You're not locked into one perspective.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🧩</div>
+          <h3 class="feature-title">Context Preservation</h3>
+          <p class="feature-description">Everything stays in one place. No lost work across tabs. Your entire research-to-publish journey in a single workspace.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🔍</div>
+          <h3 class="feature-title">Full Provenance</h3>
+          <p class="feature-description">See where every piece came from. Swap what doesn't work. Try alternatives. Your composition is living, flexible, and traceable.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🎨</div>
+          <h3 class="feature-title">Granular Control</h3>
+          <p class="feature-description">Drag whole responses, paragraphs, sentences, or words. You decide the level of precision. It's composition, not generation.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">✨</div>
+          <h3 class="feature-title">Smart Polish</h3>
+          <p class="feature-description">Final refinement that smooths transitions and ensures consistency—without touching your structure or changing your message.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta-section">
+    <h2 class="cta-title">Stop Generating.<br>Start Composing.</h2>
+    <p class="cta-subtitle">
+      Join the waitlist and be among the first to turn AI output into finished work—without ever leaving your workspace.
+    </p>
+    <div class="cta-group">
+      <button class="btn btn-primary">Join the Waitlist</button>
+      <button class="btn btn-secondary">Talk to Founders</button>
+    </div>
+  </section>
+
+  <script>
+    // Add interactive drag simulation
+    const railItems = document.querySelectorAll('.rail-item');
+    const canvasArea = document.querySelector('.canvas-area');
+    
+    let draggedContent = null;
+    
+    railItems.forEach(item => {
+      item.addEventListener('mouseenter', function() {
+        this.style.cursor = 'grab';
+      });
+      
+      item.addEventListener('mousedown', function(e) {
+        draggedContent = this.textContent;
+        this.style.cursor = 'grabbing';
+        this.style.opacity = '0.5';
+      });
+      
+      item.addEventListener('mouseup', function() {
+        this.style.cursor = 'grab';
+        this.style.opacity = '1';
+      });
+    });
+    
+    canvasArea.addEventListener('mouseenter', function() {
+      if (draggedContent) {
+        this.style.borderColor = 'rgba(74, 158, 255, 0.6)';
+        this.style.backgroundColor = 'rgba(74, 158, 255, 0.05)';
+      }
+    });
+    
+    canvasArea.addEventListener('mouseleave', function() {
+      this.style.borderColor = 'rgba(74, 158, 255, 0.3)';
+      this.style.backgroundColor = 'rgba(40, 40, 50, 0.5)';
+    });
+
+    // Smooth scroll for buttons
+    document.querySelectorAll('.btn').forEach(btn => {
+      btn.addEventListener('click', function(e) {
+        this.style.transform = 'scale(0.95)';
+        setTimeout(() => {
+          this.style.transform = 'translateY(-2px)';
+        }, 100);
+      });
+    });
+  </script>
+</body>
+</html>

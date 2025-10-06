@@ -8,9 +8,12 @@ interface ModelTrayProps {
   // Think-mode (global) toggle for ChatGPT
   thinkOnChatGPT?: boolean;
   onToggleThinkChatGPT?: () => void;
+  // Synthesis provider selection
+  synthesisProvider?: string | null;
+  onSetSynthesisProvider?: (providerId: string | null) => void;
 }
 
-const ModelTray = ({ selectedModels, onToggleModel, isLoading = false, thinkOnChatGPT = false, onToggleThinkChatGPT }: ModelTrayProps) => {
+const ModelTray = ({ selectedModels, onToggleModel, isLoading = false, thinkOnChatGPT = false, onToggleThinkChatGPT, synthesisProvider, onSetSynthesisProvider }: ModelTrayProps) => {
   return (
     <div
       className="model-tray"
@@ -38,75 +41,122 @@ const ModelTray = ({ selectedModels, onToggleModel, isLoading = false, thinkOnCh
       
       {LLM_PROVIDERS_CONFIG.map((provider: LLMProvider) => {
         const isSelected = selectedModels[provider.id];
+        const isSynthesisProvider = synthesisProvider === provider.id;
         return (
-          <button
-            key={provider.id}
-            onClick={() => !isLoading && onToggleModel(provider.id)}
-            disabled={isLoading}
-            title={`${isSelected ? 'Deselect' : 'Select'} ${provider.name}`}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: '6px 12px',
-              background: isSelected 
-                ? 'rgba(99, 102, 241, 0.2)' 
-                : 'rgba(255, 255, 255, 0.05)',
-              border: `1px solid ${
-                isSelected 
-                  ? 'rgba(99, 102, 241, 0.4)' 
-                  : 'rgba(255, 255, 255, 0.1)'
-              }`,
-              borderRadius: '8px',
-              color: isSelected ? '#a5b4fc' : '#64748b',
-              fontSize: '12px',
-              fontWeight: 500,
-              cursor: isLoading ? 'not-allowed' : 'pointer',
-              transition: 'all 0.2s ease',
-              opacity: isLoading ? 0.6 : (isSelected ? 1 : 0.7),
-              transform: 'scale(1)',
-            }}
-            onMouseEnter={(e) => {
-              if (!isLoading) {
-                e.currentTarget.style.transform = 'scale(1.05)';
-                e.currentTarget.style.background = isSelected 
-                  ? 'rgba(99, 102, 241, 0.3)' 
-                  : 'rgba(255, 255, 255, 0.1)';
-              }
-            }}
-            onMouseLeave={(e) => {
-              if (!isLoading) {
-                e.currentTarget.style.transform = 'scale(1)';
-                e.currentTarget.style.background = isSelected 
+          <div key={provider.id} style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+            {/* Synthesis Provider Toggle (Star) */}
+            {onSetSynthesisProvider && (
+              <button
+                onClick={() => !isLoading && onSetSynthesisProvider(provider.id)}
+                disabled={isLoading}
+                title={`${isSynthesisProvider ? 'Remove as' : 'Set as'} synthesis provider`}
+                style={{
+                  position: 'absolute',
+                  top: '-4px',
+                  left: '-4px',
+                  width: '16px',
+                  height: '16px',
+                  background: isSynthesisProvider 
+                    ? 'rgba(251, 191, 36, 0.9)' 
+                    : 'rgba(255, 255, 255, 0.1)',
+                  border: `1px solid ${
+                    isSynthesisProvider 
+                      ? 'rgba(251, 191, 36, 0.8)' 
+                      : 'rgba(255, 255, 255, 0.2)'
+                  }`,
+                  borderRadius: '50%',
+                  color: isSynthesisProvider ? '#fbbf24' : '#64748b',
+                  fontSize: '8px',
+                  cursor: isLoading ? 'not-allowed' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  zIndex: 10,
+                  transition: 'all 0.2s ease',
+                }}
+                onMouseEnter={(e) => {
+                  if (!isLoading) {
+                    e.currentTarget.style.transform = 'scale(1.1)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!isLoading) {
+                    e.currentTarget.style.transform = 'scale(1)';
+                  }
+                }}
+              >
+                {isSynthesisProvider ? '★' : '☆'}
+              </button>
+            )}
+            
+            <button
+              onClick={() => !isLoading && onToggleModel(provider.id)}
+              disabled={isLoading}
+              title={`${isSelected ? 'Deselect' : 'Select'} ${provider.name}`}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '6px 12px',
+                background: isSelected 
                   ? 'rgba(99, 102, 241, 0.2)' 
-                  : 'rgba(255, 255, 255, 0.05)';
-              }
-            }}
-          >
-            {/* Model Logo */}
-            <div
-              className={`model-logo ${provider.logoBgClass}`}
-              style={{
-                width: '14px',
-                height: '14px',
-                borderRadius: '3px',
-                opacity: isSelected ? 1 : 0.6,
+                  : 'rgba(255, 255, 255, 0.05)',
+                border: `1px solid ${
+                  isSelected 
+                    ? 'rgba(99, 102, 241, 0.4)' 
+                    : 'rgba(255, 255, 255, 0.1)'
+                }`,
+                borderRadius: '8px',
+                color: isSelected ? '#a5b4fc' : '#64748b',
+                fontSize: '12px',
+                fontWeight: 500,
+                cursor: isLoading ? 'not-allowed' : 'pointer',
+                transition: 'all 0.2s ease',
+                opacity: isLoading ? 0.6 : (isSelected ? 1 : 0.7),
+                transform: 'scale(1)',
               }}
-            />
-            
-            {/* Model Name */}
-            <span>{provider.name}</span>
-            
-            {/* Selection Indicator */}
-            <span
-              style={{
-                fontSize: '10px',
-                opacity: isSelected ? 1 : 0.4,
+              onMouseEnter={(e) => {
+                if (!isLoading) {
+                  e.currentTarget.style.transform = 'scale(1.05)';
+                  e.currentTarget.style.background = isSelected 
+                    ? 'rgba(99, 102, 241, 0.3)' 
+                    : 'rgba(255, 255, 255, 0.1)';
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (!isLoading) {
+                  e.currentTarget.style.transform = 'scale(1)';
+                  e.currentTarget.style.background = isSelected 
+                    ? 'rgba(99, 102, 241, 0.2)' 
+                    : 'rgba(255, 255, 255, 0.05)';
+                }
               }}
             >
-              {isSelected ? '✓' : '○'}
-            </span>
-          </button>
+              {/* Model Logo */}
+              <div
+                className={`model-logo ${provider.logoBgClass}`}
+                style={{
+                  width: '14px',
+                  height: '14px',
+                  borderRadius: '3px',
+                  opacity: isSelected ? 1 : 0.6,
+                }}
+              />
+              
+              {/* Model Name */}
+              <span>{provider.name}</span>
+              
+              {/* Selection Indicator */}
+              <span
+                style={{
+                  fontSize: '10px',
+                  opacity: isSelected ? 1 : 0.4,
+                }}
+              >
+                {isSelected ? '✓' : '○'}
+              </span>
+            </button>
+          </div>
         );
       })}
       {/* Global Think toggle for ChatGPT */}

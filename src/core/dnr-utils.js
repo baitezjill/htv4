@@ -24,6 +24,8 @@ export class DNRUtils {
     try {
       await chrome.declarativeNetRequest.updateDynamicRules({ addRules: [fullRule] });
       this.scopedRules.set(ruleId, { id: ruleId, tabId, providerId, rule: fullRule });
+      // Persist updated counter and rule tracking so SW restarts do not collide IDs
+      try { await this.persistRules(); } catch (e) { console.warn('DNR: persist after registerTabScoped failed', e); }
       console.debug(`DNR: Registered tab-scoped rule ${ruleId} for tab ${tabId}`, providerId ? `(${providerId})` : '');
       return ruleId;
     } catch (error) {
@@ -40,6 +42,8 @@ export class DNRUtils {
     try {
       await chrome.declarativeNetRequest.updateDynamicRules({ addRules: [fullRule] });
       this.scopedRules.set(ruleId, { id: ruleId, expiresAt, providerId, rule: fullRule });
+      // Persist updated counter and rule tracking so SW restarts do not collide IDs
+      try { await this.persistRules(); } catch (e) { console.warn('DNR: persist after registerTemporary failed', e); }
       // Schedule automatic removal
       setTimeout(() => {
         this.removeRule(ruleId).catch(err => console.warn(`Failed to auto-remove expired DNR rule ${ruleId}:`, err));

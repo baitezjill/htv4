@@ -162,18 +162,29 @@ export interface UserTurn {
   sessionId: string | null;
 }
 
-/** AI turn containing all provider responses and optional synthesis */
+/** AI turn containing all provider responses and optional synthesis 
+ * KEY PRINCIPLE: Each response type gets its OWN container - NO OVERWRITING!
+ */
 export interface AiTurn {
   type: 'ai';
   id: string;
   createdAt: number;
   sessionId: string | null;
-  providerResponses: Record<string, ProviderResponse>;
-  synthesisResponse?: ProviderResponse; // Kept for legacy data compatibility
+  // SEPARATE CONTAINERS for each response type
+  batchResponses: Record<string, ProviderResponse>; // GPT, Claude, Gemini individual outputs
+  synthesisResponses?: Record<string, ProviderResponse>; // Multiple synthesis runs (one per provider)
+  ensembleResponses?: Record<string, ProviderResponse>; // Multiple ensemble runs (one per provider)
+  // Legacy support - keep for backward compatibility
+  providerResponses?: Record<string, ProviderResponse>; // Deprecated
+  synthesisResponse?: ProviderResponse; // Deprecated - use synthesisResponses
+  ensembleResponse?: ProviderResponse; // Deprecated - use ensembleResponses
+  hiddenBatchOutputs?: Record<string, ProviderResponse>; // For synthesis-first workflow
   // Marks if this turn is an ensemble answer (synthesis of multiple models)
   isEnsembleAnswer?: boolean;
   // Marks if this turn is a synthesis answer (from a single model)
   isSynthesisAnswer?: boolean;
+  // UI visibility control for new workflow
+  isHidden?: boolean;
   // Optional metadata container; used for ensemble persistence flags and telemetry
   meta?: {
     // Summary of ensemble run used for badges/tooltips/history
@@ -183,6 +194,8 @@ export interface AiTurn {
       startTs?: number | null;
       durationMs?: number;
     };
+    synthForUserTurnId?: string; // Link to user turn for round-based synthesis
+    workflowStep?: 'synthesis' | 'ensemble' | 'hiddenBatch'; // New workflow step identifier
     [key:string]: any;
   };
 }
@@ -307,8 +320,11 @@ export const convertLegacyMessageToTurn = (message: Message): TurnMessage => {
     id: message.id,
     createdAt: message.timestamp || Date.now(),
     sessionId: message.sessionId || null,
-    providerResponses: {},
-    synthesisResponse: undefined,
+    batchResponses: providerResponses,
+    synthesisResponses: synthesisResponse ? { synthesis: synthesisResponse } : {},
+    ensembleResponses: {},
+    providerResponses: providerResponses,
+    synthesisResponse: synthesisResponse,
   };
 
   return aiTurn;

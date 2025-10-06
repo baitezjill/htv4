@@ -107,6 +107,16 @@ export interface ExtensionApi {
     sessionId?: string,
     useThinking?: boolean
   ): { sessionId: string; port: any };
+  executeBatchPromptWithSynthesis(
+    prompt: string,
+    providers: LLMProvider[],
+    synthesisProvider: string,
+    isVisible: boolean,
+    uiTabId?: number,
+    onMessage?: (message: any) => void,
+    sessionId?: string,
+    useThinking?: boolean
+  ): { sessionId: string; port: any };
   executeSynthesis(
     sessionId: string,
     originalPrompt: string,
@@ -130,7 +140,7 @@ export interface ExtensionApi {
     sessionId: string;
     providerContexts: Record<string, any>;
     uiTabId?: number;
-    options?: { idempotencyToken?: string };
+    options?: { idempotencyToken?: string; useThinking?: boolean };
   }): Promise<void>;
   disconnectPort(): void;
   getActivePort(): any | null;
@@ -343,6 +353,51 @@ const api: ExtensionApi = {
     });
 
     console.log("[ExtensionAPI] Sent sendPrompt via port:", { sessionId: sid, providers: providers.map(p => p.id) });
+
+    // Return the session ID and port for the UI to manage
+    return { sessionId: sid, port };
+  },
+
+  /**
+   * Executes batch prompt with synthesis-first workflow (hidden batch + synthesis)
+   */
+  executeBatchPromptWithSynthesis(
+    prompt: string,
+    providers: LLMProvider[],
+    synthesisProvider: string,
+    isVisible: boolean,
+    uiTabId?: number,
+    onMessage?: (message: any) => void,
+    sessionId?: string,
+    useThinking?: boolean
+  ): { sessionId: string; port: any } {
+    const sid = sessionId || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Create or reuse port
+    const port = this.createPort();
+    
+    // Set up message listener if provided
+    if (onMessage) {
+      port.onMessage.addListener(onMessage);
+    }
+
+    // Send the synthesis-first workflow request
+    port.postMessage({
+      type: "sendPromptWithSynthesis",
+      sessionId: sid,
+      prompt,
+      providers: providers.map(p => p.id),
+      synthesisProvider,
+      uiTabId,
+      executionMode: isVisible ? "visible" : "headless",
+      useThinking
+    });
+
+    console.log("[ExtensionAPI] Sent sendPromptWithSynthesis via port:", { 
+      sessionId: sid, 
+      providers: providers.map(p => p.id),
+      synthesisProvider 
+    });
 
     // Return the session ID and port for the UI to manage
     return { sessionId: sid, port };
