@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { VariableSizeList as List, ListChildComponentProps } from 'react-window';
 import React from 'react';
-import { TurnMessage, UserTurn, AiTurn, ProviderResponse, AppStep, ChatSession, BackendMessage, LLMProvider, isUserTurn, isAiTurn, UiPhase, BackendFullSession } from './types';
+import { TurnMessage, UserTurn, AiTurn, ProviderResponse, AppStep, ChatSession, BackendMessage, LLMProvider, isUserTurn, isAiTurn, UiPhase, BackendFullSession, ViewMode } from './types';
 import { LLM_PROVIDERS_CONFIG, EXAMPLE_PROMPT } from './constants';
 import { computeThinkFlag } from '../src/think/lib/think/computeThinkFlag.js';
 import UserTurnBlock from './components/UserTurnBlock';
@@ -15,6 +15,7 @@ import persistenceService from './services/persistence';
 import { useDelegatedScroll } from './hooks/useDelegatedScroll';
 import Banner from './components/Banner';
 import { StreamingBuffer } from './utils/streamingBuffer';
+import ComposerMode from './components/composer/ComposerMode';
 
 // Hoisted helper: Build the Ensembler prompt using provided fixed template from spec
 function buildEnsemblerPrompt(userPrompt: string, modelOutputs: Record<string, string>): string {
@@ -99,6 +100,10 @@ const App = () => {
   const [thinkOnChatGPT, setThinkOnChatGPT] = useState<boolean>(false);
   const [thinkSynthByRound, setThinkSynthByRound] = useState<Record<string, boolean>>({});
   const [thinkEnsembleByRound, setThinkEnsembleByRound] = useState<Record<string, boolean>>({});
+  
+  // Composer Mode state
+  const [viewMode, setViewMode] = useState<ViewMode>(ViewMode.CHAT);
+  const [activeComposerTurn, setActiveComposerTurn] = useState<AiTurn | null>(null);
 
   // Refs
   const activeAiTurnIdRef = useRef<string | null>(null);
@@ -266,6 +271,30 @@ const App = () => {
 
       return updated;
     });
+  }, []);
+
+  // Handler for Composer Mode to update AiTurn
+  const handleUpdateAiTurnForComposer = useCallback((aiTurnId: string, updates: Partial<AiTurn>) => {
+    setMessages(prev => {
+      const idx = prev.findIndex(t => t.type === 'ai' && (t as AiTurn).id === aiTurnId);
+      if (idx === -1) return prev;
+      
+      const updated = [...prev];
+      updated[idx] = { ...(updated[idx] as AiTurn), ...updates };
+      return updated;
+    });
+  }, []);
+
+  // Handler to enter Composer Mode with an AiTurn
+  const handleEnterComposerMode = useCallback((aiTurn: AiTurn) => {
+    setActiveComposerTurn(aiTurn);
+    setViewMode(ViewMode.COMPOSER);
+  }, []);
+
+  // Handler to exit Composer Mode
+  const handleExitComposerMode = useCallback(() => {
+    setViewMode(ViewMode.CHAT);
+    setActiveComposerTurn(null);
   }, []);
 
   // ===== Round helpers: locate round, existing synth/ensemble blocks, and insertion point =====
@@ -1421,11 +1450,10 @@ const App = () => {
           return newMap;
         });
       }
-// around line 1723
     } else {
       // Original workflow: Push empty AI turn with pending providers
-      const aiTurnId = `ai-${Date.now()}`; // <<< FIX: Declare the ID here
-      setPendingUserTurns(prev => new Map(prev).set(aiTurnId, userTurn)); // Also add this line for consistency with other flows
+      const aiTurnId = `ai-${Date.now()}`;
+      setPendingUserTurns(prev => new Map(prev).set(aiTurnId, userTurn));
 
       const pendingProviderResponses: Record<string, ProviderResponse> = {};
       activeProviders.forEach(provider => {
@@ -1439,18 +1467,16 @@ const App = () => {
 
       const aiTurn: AiTurn = {
         type: 'ai',
-        id: aiTurnId, // CORRECT: Now references the declared constant
+        id: aiTurnId,
         createdAt: Date.now(),
         sessionId: currentSessionId,
-        batchResponses: pendingProviderResponses,
+        batchResponses: pendingProviderResponses, // Main batch responses container
         synthesisResponses: {},
         ensembleResponses: {},
-        providerResponses: pendingProviderResponses
+        providerResponses: pendingProviderResponses // Legacy compatibility
       };
       setMessages(prev => [...prev, aiTurn]);
-      activeAiTurnIdRef.current = aiTurnId; // CORRECT
-      
-      // ... subsequent references will now also be correct
+      activeAiTurnIdRef.current = aiTurnId;
 
       try {
         const handlePortMessage = createPortMessageHandler();
@@ -1820,7 +1846,7 @@ const App = () => {
 
             // Skip standalone ensemble row; it's rendered under the Synthesis block for the round
             if (ai.isEnsembleAnswer && (ai.meta as any)?.synthForUserTurnId) {
-              return <div style={style}></div>;
+              return null; // Return null instead of empty div to prevent empty blocks
             }
 
             // Compose ensemble output under the synthesis turn for layered rendering
@@ -1841,6 +1867,7 @@ const App = () => {
                 currentAppStep={currentAppStep}
                 showSourceOutputs={showSourceOutputs}
                 onToggleSourceOutputs={() => setShowSourceOutputs(prev => !prev)}
+                onEnterComposerMode={handleEnterComposerMode}
               />
             );
           })() : null}
@@ -1859,6 +1886,10 @@ const App = () => {
   };
 
   const activeProviderCount = LLM_PROVIDERS_CONFIG.filter((p: LLMProvider) => selectedModels[p.id]).length;
+
+  const handleSwitchViewMode = (mode: ViewMode) => {
+    setViewMode(mode);
+  };
 
   return (
     <div className="sidecar-app-container" style={{ display: 'flex', height: '100vh', overflow: 'hidden', gap: '0px', padding: '0' }}>
@@ -1928,83 +1959,107 @@ const App = () => {
             >
               ⚙️ Models
             </button>
+            <button
+              className="mode-btn"
+              onClick={() => handleSwitchViewMode(viewMode === ViewMode.CHAT ? ViewMode.COMPOSER : ViewMode.CHAT)}
+              style={{
+                padding: '8px 12px',
+                background: 'rgba(255, 255, 255, 0.1)',
+                border: '1px solid rgba(255, 255, 255, 0.2)',
+                borderRadius: '8px',
+                color: '#e2e8f0',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+              }}
+            >
+              {viewMode === ViewMode.CHAT ? 'Composer' : 'Chat'}
+            </button>
           </div>
         </header>
 
         <main className="chat-area" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: '0' }}>
-          <div style={{ flex: 1, overflow: 'hidden', padding: '0' }}>
-            {showWelcome && (
-              <div
-                className="welcome-state"
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  height: '100%',
-                  textAlign: 'center',
-                  padding: '40px 20px',
-                }}
-              >
+          {viewMode === ViewMode.CHAT ? (
+            <div style={{ flex: 1, overflow: 'hidden', padding: '0' }}>
+              {showWelcome && (
                 <div
-                  className="welcome-icon"
+                  className="welcome-state"
                   style={{
-                    width: '80px',
-                    height: '80px',
-                    background: 'linear-gradient(45deg, #6366f1, #8b5cf6)',
-                    borderRadius: '20px',
                     display: 'flex',
+                    flexDirection: 'column',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    fontSize: '32px',
-                    marginBottom: '24px',
+                    height: '100%',
+                    textAlign: 'center',
+                    padding: '40px 20px',
                   }}
                 >
-                  🧠
+                  <div
+                    className="welcome-icon"
+                    style={{
+                      width: '80px',
+                      height: '80px',
+                      background: 'linear-gradient(45deg, #6366f1, #8b5cf6)',
+                      borderRadius: '20px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '32px',
+                      marginBottom: '24px',
+                    }}
+                  >
+                    🧠
+                  </div>
+                  <h2 className="welcome-title" style={{ fontSize: '24px', fontWeight: 600, marginBottom: '12px' }}>
+                    Intelligence Augmentation
+                  </h2>
+                  <p className="welcome-subtitle" style={{ fontSize: '16px', color: '#94a3b8', marginBottom: '32px', maxWidth: '400px' }}>
+                    Ask one question, get synthesized insights from multiple AI models in real-time
+                  </p>
+                  <button
+                    onClick={() => handleSendPrompt(EXAMPLE_PROMPT)}
+                    disabled={isLoading}
+                    style={{
+                      fontSize: '14px',
+                      color: '#a78bfa',
+                      padding: '8px 16px',
+                      border: '1px solid #a78bfa',
+                      borderRadius: '8px',
+                      background: 'rgba(167, 139, 250, 0.1)',
+                      cursor: 'pointer',
+                      opacity: isLoading ? 0.5 : 1,
+                    }}
+                  >
+                    Try: "{EXAMPLE_PROMPT}"
+                  </button>
                 </div>
-                <h2 className="welcome-title" style={{ fontSize: '24px', fontWeight: 600, marginBottom: '12px' }}>
-                  Intelligence Augmentation
-                </h2>
-                <p className="welcome-subtitle" style={{ fontSize: '16px', color: '#94a3b8', marginBottom: '32px', maxWidth: '400px' }}>
-                  Ask one question, get synthesized insights from multiple AI models in real-time
-                </p>
-                <button
-                  onClick={() => handleSendPrompt(EXAMPLE_PROMPT)}
-                  disabled={isLoading}
-                  style={{
-                    fontSize: '14px',
-                    color: '#a78bfa',
-                    padding: '8px 16px',
-                    border: '1px solid #a78bfa',
-                    borderRadius: '8px',
-                    background: 'rgba(167, 139, 250, 0.1)',
-                    cursor: 'pointer',
-                    opacity: isLoading ? 0.5 : 1,
-                  }}
-                >
-                  Try: "{EXAMPLE_PROMPT}"
-                </button>
-              </div>
-            )}
+              )}
 
-            {!showWelcome && (
-              <div ref={outerScrollRef} style={{ height: Math.max(300, window.innerHeight - 220), overflowY: 'hidden', overflowX: 'hidden', padding: '0' }}>
-              <List
-                ref={listRef}
-                height={Math.max(300, window.innerHeight - 220)}
-                width={'100%'}
-                itemCount={messages.length}
-                itemSize={(index: number) => getItemSize(index)}
-                itemKey={(index: number) => messages[index]?.id || String(index)}
-                overscanCount={5}
-                estimatedItemSize={160}
-                style={{ padding: '8px 0' }}
-              >
-                {Row}
-              </List>
-              </div>
-            )}
-          </div>
+              {!showWelcome && (
+                <div ref={outerScrollRef} style={{ height: Math.max(300, window.innerHeight - 220), overflowY: 'hidden', overflowX: 'hidden', padding: '0' }}>
+                <List
+                  ref={listRef}
+                  height={Math.max(300, window.innerHeight - 220)}
+                  width={'100%'}
+                  itemCount={messages.length}
+                  itemSize={(index: number) => getItemSize(index)}
+                  itemKey={(index: number) => messages[index]?.id || String(index)}
+                  overscanCount={5}
+                  estimatedItemSize={160}
+                  style={{ padding: '8px 0' }}
+                >
+                  {Row}
+                </List>
+                </div>
+              )}
+            </div>
+          ) : viewMode === ViewMode.COMPOSER && activeComposerTurn ? (
+            <ComposerMode
+              aiTurn={activeComposerTurn}
+              sessionId={currentSessionId}
+              onExit={handleExitComposerMode}
+              onUpdateAiTurn={handleUpdateAiTurnForComposer}
+            />
+          ) : null}
         </main>
 
         <ModelTray
@@ -2017,15 +2072,17 @@ const App = () => {
           onSetSynthesisProvider={handleSetSynthesisProvider}
         />
 
-        <ChatInput
-          onSendPrompt={handleSendPrompt}
-          onContinuation={handleContinuation}
-          isLoading={isLoading}
-          isReducedMotion={isReducedMotion}
-          activeProviderCount={activeProviderCount}
-          isVisibleMode={isVisibleMode}
-          isContinuationMode={isContinuationMode}
-        />
+        {viewMode === ViewMode.CHAT && (
+          <ChatInput
+            onSendPrompt={handleSendPrompt}
+            onContinuation={handleContinuation}
+            isLoading={isLoading}
+            isReducedMotion={isReducedMotion}
+            activeProviderCount={activeProviderCount}
+            isVisibleMode={isVisibleMode}
+            isContinuationMode={isContinuationMode}
+          />
+        )}
       </div>
 
       {isHistoryPanelOpen && (

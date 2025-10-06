@@ -198,6 +198,7 @@ export interface AiTurn {
     workflowStep?: 'synthesis' | 'ensemble' | 'hiddenBatch'; // New workflow step identifier
     [key:string]: any;
   };
+  composerState?: ComposerState;
 }
 
 /** Union type for all turn-based messages */
@@ -246,6 +247,129 @@ export interface Round {
   synthesis?: ProviderResponse;
   providerContexts?: ProviderContinuationContexts;
   createdAt: number;
+}
+
+// =============================================================================
+// COMPOSER MODE TYPE DEFINITIONS
+// =============================================================================
+
+/** Slate node descendant type for editor content */
+// Use Slate's Descendant type, augmented by our declaration-merging in ui/types/slate.d.ts
+import type { Descendant } from 'slate';
+export type SlateDescendant = Descendant;
+
+/** Content source mapping for provenance tracking */
+export interface ContentSourceMap {
+  [nodeId: string]: {
+    providerId: string;
+    sourceType: 'batch' | 'synthesis' | 'ensemble' | 'hidden';
+    originalIndex: number;
+    granularity: 'full' | 'paragraph' | 'sentence';
+    text: string;
+    timestamp: number;
+    metadata?: Record<string, any>;
+  };
+}
+
+/** Refinement entry for history tracking */
+export interface RefinementEntry {
+  id: string;
+  timestamp: number;
+  inputContent: string;
+  refinedContent: string;
+  refinementType: 'grammar' | 'style' | 'tone' | 'structure' | 'custom';
+  model: string;
+  status: 'pending' | 'completed' | 'error';
+  userRating?: number;
+  appliedChanges: boolean;
+  error?: string;
+}
+
+/** Export entry for tracking exports */
+export interface ExportEntry {
+  id: string;
+  timestamp: number;
+  format: 'markdown' | 'html' | 'text' | 'json';
+  content: string;
+  metadata?: Record<string, any>;
+}
+
+/** Composer state stored in AiTurn */
+export interface ComposerState {
+  // Current canvas content (Slate descendants)
+  canvasContent: SlateDescendant[];
+  // Current granularity for parsing sources
+  granularity: 'full' | 'paragraph' | 'sentence';
+  // Provenance/source mapping keyed by nodeId
+  sourceMap: ContentSourceMap;
+  // Save/dirty tracking
+  isDirty: boolean;
+  createdAt: number;
+  lastModified: number;
+  // Optional last saved timestamp for persistence UI
+  lastSaved?: number;
+  // Histories
+  refinementHistory: RefinementEntry[];
+  exportHistory: ExportEntry[];
+}
+
+/** Granular unit for drag and drop */
+export interface GranularUnit {
+  id: string;
+  text: string;
+  type: 'full' | 'paragraph' | 'sentence';
+  sourceId: string;
+  providerId: string;
+  index: number;
+}
+
+/** Composable source from AI outputs */
+export interface ComposableSource {
+  id: string;
+  type: 'batch' | 'synthesis' | 'ensemble' | 'hidden';
+  providerId: string;
+  content: string;
+  status: ProviderResponseStatus;
+  metadata?: Record<string, any>;
+}
+
+/** View mode for navigation */
+export enum ViewMode {
+  CHAT = 'chat',
+  COMPOSER = 'composer',
+  HISTORY = 'history'
+}
+
+/** Composer context value */
+export interface ComposerContextValue {
+  activeAiTurn: AiTurn | null;
+  canvasContent: SlateDescendant[];
+  granularityLevel: 'full' | 'paragraph' | 'sentence';
+  selectedSources: ComposableSource[];
+  updateCanvas: (content: SlateDescendant[]) => void;
+  persistComposerState: () => void;
+  setGranularity: (level: 'full' | 'paragraph' | 'sentence') => void;
+}
+
+/** Refinement options for API calls */
+export interface RefinementOptions {
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  type?: 'grammar' | 'style' | 'tone' | 'structure' | 'custom';
+  instructions?: string;
+}
+
+/** Refinement response from API */
+export interface RefinementResponse {
+  text: string;
+  model: string;
+  tokensUsed?: number;
+  changes?: Array<{
+    type: string;
+    description: string;
+    location: { start: number; end: number };
+  }>;
 }
 
 // =============================================================================
