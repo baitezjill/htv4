@@ -1251,7 +1251,7 @@ chrome.runtime.onConnect.addListener((port) => {
         console.log(`[HTOS] Parallel fanout initiated with session: ${capturedSessionId}`);
          // Inform UI about the session id to guarantee consistent continuation usage
          try {
-           port.postMessage({ type: "session", sessionId: capturedSessionId });
+           port.postMessage({ type: "session", responseType: "session", sessionId: capturedSessionId });
          } catch (e) {
            console.warn('[HTOS] Failed to emit session id to port', e);
          }
@@ -1264,13 +1264,13 @@ chrome.runtime.onConnect.addListener((port) => {
         // Validate providers
         const availableProviders = providers.filter(p => providerRegistry.isAvailable(p));
         if (availableProviders.length === 0) {
-          port.postMessage({ type: "error", data: { message: "No available providers", code: "NO_PROVIDERS" } });
+          port.postMessage({ type: "error", responseType: "error", data: { message: "No available providers", code: "NO_PROVIDERS" } });
           return;
         }
         // Validate synthesis provider
         const synthId = String(synthesisProvider || '').toLowerCase();
         if (!providerRegistry.isAvailable(synthId)) {
-          port.postMessage({ type: "error", data: { message: `Synthesis provider ${synthId} not available`, code: "SYNTHESIS_PROVIDER_UNAVAILABLE" } });
+          port.postMessage({ type: "error", responseType: "error", data: { message: `Synthesis provider ${synthId} not available`, code: "SYNTHESIS_PROVIDER_UNAVAILABLE" } });
           return;
         }
 
@@ -1286,7 +1286,7 @@ chrome.runtime.onConnect.addListener((port) => {
         const capturedSessionId = sessionId || `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         console.log('[HTOS] Using capturedSessionId for sendPromptWithSynthesis:', capturedSessionId);
         try { sessionManager.getOrCreateSession(capturedSessionId, String(prompt || "")); } catch {}
-        try { port.postMessage({ type: "session", sessionId: capturedSessionId }); } catch {}
+        try { port.postMessage({ type: "session", responseType: "session", sessionId: capturedSessionId }); } catch {}
 
         const roundId = sessionManager.beginRound(capturedSessionId, String(prompt || ""));
 
@@ -1315,15 +1315,15 @@ chrome.runtime.onConnect.addListener((port) => {
               if (result?.ok !== false && (text || '').trim().length > 0) succeeded += 1;
               // Emit revealable snapshot and progress
               try {
-                port.postMessage({ type: 'HIDDEN_BATCH_RESULT', sessionId: capturedSessionId, providerId, text, ok: result?.ok !== false, meta: result?.meta || {} });
-                port.postMessage({ type: 'HIDDEN_BATCH_PROGRESS', sessionId: capturedSessionId, payload: { completed, total: totalProviders, succeeded } });
+                port.postMessage({ type: 'HIDDEN_BATCH_RESULT', responseType: 'batch', sessionId: capturedSessionId, providerId, text, ok: result?.ok !== false, meta: result?.meta || {} });
+                port.postMessage({ type: 'HIDDEN_BATCH_PROGRESS', responseType: 'progress', sessionId: capturedSessionId, payload: { completed, total: totalProviders, succeeded } });
               } catch {}
             },
             onError: (providerId, error) => {
               completed += 1;
               try {
-                port.postMessage({ type: 'HIDDEN_BATCH_RESULT', sessionId: capturedSessionId, providerId, text: '', ok: false, error: error?.message || 'Provider error' });
-                port.postMessage({ type: 'HIDDEN_BATCH_PROGRESS', sessionId: capturedSessionId, payload: { completed, total: totalProviders, succeeded } });
+                port.postMessage({ type: 'HIDDEN_BATCH_RESULT', responseType: 'batch', sessionId: capturedSessionId, providerId, text: '', ok: false, error: error?.message || 'Provider error' });
+                port.postMessage({ type: 'HIDDEN_BATCH_PROGRESS', responseType: 'progress', sessionId: capturedSessionId, payload: { completed, total: totalProviders, succeeded } });
               } catch {}
             },
             onAllComplete: async (resultsMap, errorsMap) => {
@@ -1380,7 +1380,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
                 if (!enoughSources) {
                   // Fallback to normal batch round (no synthesis)
-                  try { port.postMessage({ type: 'SYNTHESIS_SKIPPED_NO_SOURCES', sessionId: capturedSessionId, payload: { synthProvider: synthId, otherCount: otherOk.length } }); } catch {}
+                  try { port.postMessage({ type: 'SYNTHESIS_SKIPPED_NO_SOURCES', responseType: 'synthesis', sessionId: capturedSessionId, payload: { synthProvider: synthId, otherCount: otherOk.length } }); } catch {}
 
                   try { sessionManager.completeRound(capturedSessionId, roundId, { skipSave: true }); } catch {}
                   const stepResults = Array.from(resultsMap.entries()).map(([providerId, res]) => ({
@@ -1390,7 +1390,7 @@ chrome.runtime.onConnect.addListener((port) => {
                     meta: res?.meta || {}
                   }));
                   const responses = Object.fromEntries(stepResults.map(r => [r.providerId, { text: r.text }]));
-                  port.postMessage({ type: 'WORKFLOW_COMPLETE', sessionId: capturedSessionId, stepResults, results: responses, payload: { stepResults, responses } });
+                  port.postMessage({ type: 'WORKFLOW_COMPLETE', responseType: 'complete', sessionId: capturedSessionId, stepResults, results: responses, payload: { stepResults, responses } });
                   try { sessionManager.saveSession(capturedSessionId).catch(() => {}); } catch {}
                   return;
                 }
@@ -1414,7 +1414,7 @@ chrome.runtime.onConnect.addListener((port) => {
                   if (synthMeta.parentMsgId) meta.parentMsgId = synthMeta.parentMsgId;
                 }
 
-                try { port.postMessage({ type: 'SYNTHESIS_STARTING', sessionId: capturedSessionId, payload: { provider: synthId, sources: otherResults.length } }); } catch {}
+                try { port.postMessage({ type: 'SYNTHESIS_STARTING', responseType: 'synthesis', sessionId: capturedSessionId, payload: { provider: synthId, sources: otherResults.length } }); } catch {}
 
                 // Execute synthesis first
                 const res = await self.orchestrator.batchPrompt(String(prompt || ''), {
@@ -1428,7 +1428,7 @@ chrome.runtime.onConnect.addListener((port) => {
                     if (chunk && chunk.partial) {
                       const delta = makeDelta(capturedSessionId, synthId, chunk.text || '');
                       if (delta) {
-                        try { port.postMessage({ type: 'SYNTHESIS_PARTIAL', sessionId: capturedSessionId, payload: { provider: synthId, text: delta } }); } catch {}
+                        try { port.postMessage({ type: 'SYNTHESIS_PARTIAL', responseType: 'synthesis', sessionId: capturedSessionId, payload: { provider: synthId, text: delta } }); } catch {}
                       }
                     }
                   }
@@ -1444,7 +1444,7 @@ chrome.runtime.onConnect.addListener((port) => {
                 } catch {}
 
                 // Emit synthesis completion
-                try { port.postMessage({ type: 'SYNTHESIS_COMPLETE', sessionId: capturedSessionId, providerId: synthId, text: synthesisText, ok: s?.ok !== false, payload: [{ provider: synthId, response: synthesisText }] }); } catch {}
+                try { port.postMessage({ type: 'SYNTHESIS_COMPLETE', responseType: 'synthesis', sessionId: capturedSessionId, providerId: synthId, text: synthesisText, ok: s?.ok !== false, payload: [{ provider: synthId, response: synthesisText }] }); } catch {}
 
                 // Now run ensemble AFTER synthesis completes (sequential execution)
                 let ensembleProviderId = 'gemini';
@@ -1512,7 +1512,7 @@ chrome.runtime.onConnect.addListener((port) => {
                         },
                         onError: (err) => {
                           try {
-                            port.postMessage({ type: 'ENSEMBLE_COMPLETE', sessionId: capturedSessionId, providerId: ensembleProviderId, text: '', ok: false, error: err?.message || 'Ensemble error' });
+                            port.postMessage({ type: 'ENSEMBLE_COMPLETE', responseType: 'ensemble', sessionId: capturedSessionId, providerId: ensembleProviderId, text: '', ok: false, error: err?.message || 'Ensemble error' });
                           } catch {}
                         }
                       }
@@ -1520,7 +1520,7 @@ chrome.runtime.onConnect.addListener((port) => {
                   } catch (ensembleErr) {
                     console.warn('[HTOS] Ensemble execution failed', ensembleErr);
                     try {
-                      port.postMessage({ type: 'ENSEMBLE_COMPLETE', sessionId: capturedSessionId, providerId: ensembleProviderId, text: '', ok: false, error: ensembleErr?.message || 'Ensemble error' });
+                      port.postMessage({ type: 'ENSEMBLE_COMPLETE', responseType: 'ensemble', sessionId: capturedSessionId, providerId: ensembleProviderId, text: '', ok: false, error: ensembleErr?.message || 'Ensemble error' });
                     } catch {}
                   }
                 }
@@ -1529,6 +1529,7 @@ chrome.runtime.onConnect.addListener((port) => {
                 try {
                   port.postMessage({
                     type: 'HIDDEN_BATCH_REVEAL',
+                    responseType: 'batch',
                     sessionId: capturedSessionId,
                     batchResults: Object.fromEntries(hiddenResults),
                     payload: { batchResults: Object.fromEntries(hiddenResults) }
@@ -1538,14 +1539,14 @@ chrome.runtime.onConnect.addListener((port) => {
                 // Wrap up
                 try { sessionManager.completeRound(capturedSessionId, roundId, { skipSave: true }); } catch {}
                 try { sessionManager.saveSession(capturedSessionId).catch(() => {}); } catch {}
-                try { port.postMessage({ type: 'WORKFLOW_COMPLETE', sessionId: capturedSessionId, stepResults: [{ providerId: synthId, ok: s?.ok !== false, text: synthesisText }], results: { [synthId]: { text: synthesisText } } }); } catch {}
+                try { port.postMessage({ type: 'WORKFLOW_COMPLETE', responseType: 'complete', sessionId: capturedSessionId, stepResults: [{ providerId: synthId, ok: s?.ok !== false, text: synthesisText }], results: { [synthId]: { text: synthesisText } } }); } catch {}
 
               } catch (e) {
                 console.error('[HTOS] synthesis-first onAllComplete failed', e);
                 // As a last resort, try to finalize the round and surface batch-only results
                 try { sessionManager.completeRound(capturedSessionId, roundId, { skipSave: true }); } catch {}
                 const batchOnly = Object.fromEntries(Array.from(hiddenResults.entries()).map(([pid, text]) => [pid, { text }]));
-                try { port.postMessage({ type: 'WORKFLOW_COMPLETE', sessionId: capturedSessionId, results: batchOnly }); } catch {}
+                try { port.postMessage({ type: 'WORKFLOW_COMPLETE', responseType: 'complete', sessionId: capturedSessionId, results: batchOnly }); } catch {}
               }
             }
           }
@@ -1671,7 +1672,7 @@ chrome.runtime.onConnect.addListener((port) => {
                 console.log(`[HTOS] Continuation onAllComplete fired for session`, sessionId);
                 try { sessionManager.completeRound(sessionId, roundId, { skipSave: true }); } catch {}
                 // Lightweight beacon to guarantee UI event
-                port.postMessage({ type: "WORKFLOW_COMPLETE", sessionId, results: [] });
+                port.postMessage({ type: "WORKFLOW_COMPLETE", responseType: 'complete', sessionId, results: [] });
               } catch(e) {
                 console.warn('[HTOS] Failed to emit continuation WORKFLOW_COMPLETE beacon', e);
               }
@@ -2001,6 +2002,42 @@ chrome.runtime.onConnect.addListener((port) => {
         }
       }
 
+      // =============================================================================
+      // NEW UNIFIED WORKFLOW ENGINE (Phase 1)
+      // =============================================================================
+
+      // Handler for starting a new workflow (withContext: false)
+      if (message.type === 'startWorkflow') {
+        try {
+          const { prompt, providers, services, sessionId } = message;
+          await _executeWorkflow(prompt, providers, services, sessionId, port, { withContext: false });
+        } catch (error) {
+          console.error('[HTOS] startWorkflow error:', error);
+          port.postMessage({
+            type: 'WORKFLOW_ERROR',
+            responseType: 'error',
+            sessionId: message.sessionId || 'unknown',
+            payload: { phase: 'startWorkflow', error: error?.message || 'Workflow failed' }
+          });
+        }
+      }
+
+      // Handler for continuing an existing workflow (withContext: true)
+      if (message.type === 'continue') {
+        try {
+          const { prompt, providers, services, sessionId } = message;
+          await _executeWorkflow(prompt, providers, services, sessionId, port, { withContext: true });
+        } catch (error) {
+          console.error('[HTOS] continue error:', error);
+          port.postMessage({
+            type: 'WORKFLOW_ERROR',
+            responseType: 'error',
+            sessionId: message.sessionId || 'unknown',
+            payload: { phase: 'continue', error: error?.message || 'Workflow failed' }
+          });
+        }
+      }
+
     });
 
 
@@ -2270,6 +2307,327 @@ async function initializeOrchestrator(availableProviders) {
     }
   } catch (e) {
     console.error("[HTOS] Orchestrator init failed", e);
+  }
+}
+
+// =============================================================================
+// UNIFIED WORKFLOW ENGINE (Phase 1)
+// =============================================================================
+
+/**
+ * The unified workflow engine that handles both new workflows and continuations
+ * @param {string} prompt - The user prompt
+ * @param {string[]} providers - Array of provider IDs to use for batch step
+ * @param {Object} services - Services configuration object
+ * @param {string} sessionId - Session ID (will be generated if not provided)
+ * @param {Object} port - Chrome runtime port for communication
+ * @param {Object} options - Options object with withContext boolean
+ */
+async function _executeWorkflow(prompt, providers, services, sessionId, port, options = {}) {
+  const { withContext = false } = options;
+  // FIX: Extract useThinking from the options object.
+  const useThinking = options.useThinking || false;
+  
+  try {
+    // 1. Generate sessionId if not provided and post back to UI immediately
+    if (!sessionId) {
+      sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+    
+    port.postMessage({
+      type: 'SESSION_STARTED',
+      responseType: 'session',
+      sessionId,
+      payload: { sessionId }
+    });
+
+    // 2. Begin a new round in SessionManager
+    const roundId = sessionManager.beginRound(sessionId, prompt);
+    
+    // 3. Execute the Batch Step
+    const collectedBatchResults = new Map();
+
+    if (services.batch && providers && providers.length > 0) {
+      await new Promise((resolve, reject) => {
+        const batchOptions = {
+          sessionId,
+          // FIX: Pass the useThinking flag to the orchestrator options.
+          useThinking,
+          onPartial: (providerId, chunk) => {
+            if (chunk && chunk.partial) {
+              const delta = makeDelta(sessionId, providerId, chunk.text || "");
+              if (delta) {
+                port.postMessage({
+                  type: 'BATCH_PARTIAL',
+                  responseType: 'batch',
+                  sessionId,
+                  providerId,
+                  text: delta,
+                  partial: true
+                });
+              }
+            }
+          },
+          onProviderComplete: (providerId, result) => {
+            port.postMessage({
+              type: 'BATCH_COMPLETE',
+              responseType: 'batch',
+              sessionId,
+              providerId,
+              text: result?.text || '',
+              partial: false,
+              ok: result?.ok !== false,
+              meta: result?.meta || {}
+            });
+            
+            if (result?.ok !== false && result?.text) {
+              collectedBatchResults.set(providerId, result.text);
+            }
+            
+            sessionManager.updateRoundProvider(sessionId, roundId, providerId, result, { skipSave: true });
+          },
+          onError: (providerId, error) => {
+            port.postMessage({
+              type: 'BATCH_ERROR',
+              responseType: 'batch',
+              sessionId,
+              providerId,
+              error: error?.message || 'Batch request failed'
+            });
+          },
+          onAllComplete: () => {
+            resolve();
+          }
+        };
+
+        if (withContext) {
+          const providerContexts = sessionManager.getProviderContexts(sessionId);
+          self.faultTolerantOrchestrator.executeContinuationFanout(
+            prompt, providers, sessionId, providerContexts, batchOptions
+          ).catch(reject);
+        } else {
+          // FIX: The call to executeParallelFanout was missing the options object.
+          // It now correctly passes `batchOptions`.
+          self.faultTolerantOrchestrator.executeParallelFanout(
+            prompt, providers, batchOptions
+          ).catch(reject);
+        }
+      });
+    }
+
+    const finalBatchResults = Object.fromEntries(collectedBatchResults);
+
+    // 4. Execute Subsequent Services in Parallel
+    const tasks = [];
+
+    // Handle synthesis with array of providers
+    if (services.synthesis && services.synthesis.providers && services.synthesis.providers.length > 0) {
+      for (const synthProvider of services.synthesis.providers) {
+        tasks.push(
+          // FIX: Pass the useThinking flag down to the synthesis step.
+          runSynthesisStep(prompt, finalBatchResults, synthProvider, sessionId, port, { useThinking })
+        );
+      }
+    }
+
+    // Handle ensemble
+    if (services.ensemble && services.ensemble.provider) {
+      tasks.push(
+        // FIX: Pass the useThinking flag down to the ensemble step.
+        runEnsembleStep(prompt, finalBatchResults, services.ensemble.provider, sessionId, port, { useThinking })
+      );
+    }
+
+    // Run all subsequent services in parallel
+    if (tasks.length > 0) {
+      await Promise.allSettled(tasks);
+    }
+
+    // 5. Complete the round and persist results
+    sessionManager.completeRound(sessionId, roundId, { skipSave: true });
+    await sessionManager.saveSession(sessionId);
+    
+    // 6. Send final completion message
+    port.postMessage({
+      type: 'WORKFLOW_COMPLETE',
+      responseType: 'complete',
+      sessionId,
+      payload: { sessionId, roundId }
+    });
+
+  } catch (error) {
+    console.error('[HTOS] _executeWorkflow error:', error);
+    port.postMessage({
+      type: 'WORKFLOW_ERROR',
+      responseType: 'error',
+      sessionId: sessionId || 'unknown',
+      payload: { phase: 'workflow', error: error?.message || 'Workflow execution failed' }
+    });
+  }
+}
+
+/**
+ * Run synthesis step for a single provider
+ */
+async function runSynthesisStep(prompt, batchResults, synthProvider, sessionId, port, options = {}) {
+  const { useThinking = false } = options;
+  try {
+    const adapter = providerRegistry.getAdapter(synthProvider);
+    if (!adapter) {
+      port.postMessage({
+        type: 'SYNTHESIS_ERROR',
+        responseType: 'synthesis',
+        sessionId,
+        payload: { provider: synthProvider, error: 'Provider adapter not available' }
+      });
+      return;
+    }
+
+    const synthesisPrompt = buildSynthesisPrompt(prompt, batchResults, synthProvider);
+    const request = {
+      originalPrompt: synthesisPrompt,
+      sessionId,
+      meta: {
+        synthesis: true,
+        batchResults: Object.keys(batchResults).length,
+        ...(synthProvider === 'chatgpt' ? { useThinking } : {})
+  }
+};
+
+  
+
+    const controller = new AbortController();
+    const result = await adapter.sendPrompt(
+      request,
+      (chunk) => {
+        if (chunk && chunk.partial) {
+          const delta = makeDelta(sessionId, synthProvider, chunk.text || "");
+          if (delta) {
+            port.postMessage({
+              type: 'SYNTHESIS_PARTIAL',
+              responseType: 'synthesis',
+              sessionId,
+              providerId: synthProvider,
+              text: delta,
+              partial: true
+            });
+          }
+        }
+      },
+      controller.signal
+    );
+
+    // Send completion message
+    port.postMessage({
+      type: 'SYNTHESIS_COMPLETE',
+      responseType: 'synthesis',
+      sessionId,
+      providerId: synthProvider,
+      text: result?.text || '',
+      partial: false,
+      ok: result?.ok !== false,
+      meta: result?.meta || {}
+    });
+
+    // Update session context
+    sessionManager.updateProviderContext(
+      sessionId,
+      synthProvider,
+      { text: result?.text || "", meta: result?.meta || {} },
+      true,
+      { skipSave: true }
+    );
+
+  } catch (error) {
+    console.error('[HTOS] Synthesis error for provider', synthProvider, error);
+    port.postMessage({
+      type: 'SYNTHESIS_ERROR',
+      responseType: 'synthesis',
+      sessionId,
+      payload: { provider: synthProvider, error: error?.message || 'Synthesis failed' }
+    });
+  }
+}
+
+/**
+ * Run ensemble step for a single provider
+ */
+async function runEnsembleStep(prompt, batchResults, ensembleProvider, sessionId, port, options = {}) {
+  try {
+    const adapter = providerRegistry.getAdapter(ensembleProvider);
+    if (!adapter) {
+      port.postMessage({
+        type: 'ENSEMBLE_ERROR',
+        responseType: 'ensemble',
+        sessionId,
+        payload: { provider: ensembleProvider, error: 'Provider adapter not available' }
+      });
+      return;
+    }
+
+    const ensemblePrompt = buildEnsemblerPrompt(prompt, batchResults);
+    // Inside runEnsembleStep
+const request = {
+  originalPrompt: ensemblePrompt,
+  sessionId,
+  meta: {
+    ensemble: true,
+    batchResults: Object.keys(batchResults).length,
+    // FIX: Conditionally add the useThinking flag ONLY for chatgpt
+    ...(ensembleProvider === 'chatgpt' ? { useThinking } : {})
+  }
+};
+
+    const controller = new AbortController();
+    const result = await adapter.sendPrompt(
+      request,
+      (chunk) => {
+        if (chunk && chunk.partial) {
+          const delta = makeDelta(sessionId, ensembleProvider, chunk.text || "");
+          if (delta) {
+            port.postMessage({
+              type: 'ENSEMBLE_PARTIAL',
+              responseType: 'ensemble',
+              sessionId,
+              providerId: ensembleProvider,
+              text: delta,
+              partial: true
+            });
+          }
+        }
+      },
+      controller.signal
+    );
+
+    // Send completion message
+    port.postMessage({
+      type: 'ENSEMBLE_COMPLETE',
+      responseType: 'ensemble',
+      sessionId,
+      providerId: ensembleProvider,
+      text: result?.text || '',
+      partial: false,
+      ok: result?.ok !== false,
+      meta: result?.meta || {}
+    });
+
+    // Update session context
+    sessionManager.updateProviderContext(
+      sessionId,
+      ensembleProvider,
+      { text: result?.text || "", meta: result?.meta || {} },
+      true,
+      { skipSave: true }
+    );
+
+  } catch (error) {
+    console.error('[HTOS] Ensemble error for provider', ensembleProvider, error);
+    port.postMessage({
+      type: 'ENSEMBLE_ERROR',
+      responseType: 'ensemble',
+      sessionId,
+      payload: { provider: ensembleProvider, error: error?.message || 'Ensemble failed' }
+    });
   }
 }
 

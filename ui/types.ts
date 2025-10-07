@@ -172,8 +172,9 @@ export interface AiTurn {
   sessionId: string | null;
   // SEPARATE CONTAINERS for each response type
   batchResponses: Record<string, ProviderResponse>; // GPT, Claude, Gemini individual outputs
-  synthesisResponses?: Record<string, ProviderResponse>; // Multiple synthesis runs (one per provider)
-  ensembleResponses?: Record<string, ProviderResponse>; // Multiple ensemble runs (one per provider)
+  // Multi-take support: arrays per provider to track multiple runs/takes
+  synthesisResponses?: Record<string, ProviderResponse[]>; // Multiple synthesis runs (takes per provider)
+  ensembleResponses?: Record<string, ProviderResponse[]>; // Multiple ensemble runs (takes per provider)
   // Legacy support - keep for backward compatibility
   providerResponses?: Record<string, ProviderResponse>; // Deprecated
   synthesisResponse?: ProviderResponse; // Deprecated - use synthesisResponses
@@ -445,7 +446,7 @@ export const convertLegacyMessageToTurn = (message: Message): TurnMessage => {
     createdAt: message.timestamp || Date.now(),
     sessionId: message.sessionId || null,
     batchResponses: providerResponses,
-    synthesisResponses: synthesisResponse ? { synthesis: synthesisResponse } : {},
+    synthesisResponses: synthesisResponse ? { synthesis: [synthesisResponse] } : {},
     ensembleResponses: {},
     providerResponses: providerResponses,
     synthesisResponse: synthesisResponse,

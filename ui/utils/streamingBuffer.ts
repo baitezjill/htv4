@@ -6,12 +6,14 @@
  * and apply them once per frame, right before the browser paints.
  */
 
-type UpdateCallback = (providerId: string, text: string, status: string) => void;
+type ResponseType = 'batch' | 'synthesis' | 'ensemble';
+type UpdateCallback = (providerId: string, text: string, status: string, responseType: ResponseType) => void;
 
 interface BufferedUpdate {
   providerId: string;
   delta: string;
   status: string;
+  responseType: ResponseType;
 }
 
 export class StreamingBuffer {
@@ -27,15 +29,16 @@ export class StreamingBuffer {
    * Add a text delta to the buffer for a specific provider.
    * Multiple deltas for the same provider are concatenated.
    */
-  addDelta(providerId: string, delta: string, status: string = 'streaming'): void {
+  addDelta(providerId: string, delta: string, status: string = 'streaming', responseType: ResponseType): void {
     const existing = this.buffer.get(providerId);
     
     if (existing) {
       // Concatenate new delta with existing buffered text
       existing.delta += delta;
       existing.status = status;
+      existing.responseType = responseType;
     } else {
-      this.buffer.set(providerId, { providerId, delta, status });
+      this.buffer.set(providerId, { providerId, delta, status, responseType });
     }
 
     // Schedule a flush if not already scheduled
@@ -47,8 +50,8 @@ export class StreamingBuffer {
   /**
    * Set complete text for a provider (non-incremental update)
    */
-  setComplete(providerId: string, text: string, status: string = 'completed'): void {
-    this.buffer.set(providerId, { providerId, delta: text, status });
+  setComplete(providerId: string, text: string, status: string = 'completed', responseType: ResponseType): void {
+    this.buffer.set(providerId, { providerId, delta: text, status, responseType });
     
     if (this.rafId === null) {
       this.scheduleFlush();
@@ -75,7 +78,7 @@ export class StreamingBuffer {
 
     // Apply all updates in one go
     this.buffer.forEach((update) => {
-      this.updateCallback(update.providerId, update.delta, update.status);
+      this.updateCallback(update.providerId, update.delta, update.status, update.responseType);
     });
 
     // Clear buffer and reset RAF ID

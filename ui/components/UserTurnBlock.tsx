@@ -1,7 +1,7 @@
 import { UserTurn } from '../types';
 import { UserIcon, ChevronDownIcon, ChevronUpIcon } from './Icons';
 import { useState, useCallback } from 'react';
-import TurnActionBar from './TurnActionBar';
+
 
 const CopyButton = ({ text, label, onClick }: { text: string; label: string; onClick?: () => void }) => {
   const [copied, setCopied] = useState(false);
@@ -43,25 +43,13 @@ interface UserTurnBlockProps {
   userTurn: UserTurn;
   isExpanded: boolean;
   onToggle: (turnId: string) => void;
-  // Round-scoped action bar props
-  synthSelected?: Record<string, boolean>;
-  onToggleSynth?: (roundUserTurnId: string, providerId: string) => void;
-  onRunSynthesis?: (roundUserTurnId: string) => void;
-  ensembleSelected?: string | null;
-  onSelectEnsemble?: (roundUserTurnId: string, providerId: string) => void;
-  onRunEnsemble?: (roundUserTurnId: string) => void;
-  eligibleMap?: Record<string, { disabled: boolean; reason?: string }>;
-  ensembleEligibleMap?: Record<string, { disabled: boolean; reason?: string }>;
-  disableSynthesisRun?: boolean;
-  disableEnsembleRun?: boolean;
-  // Think-mode toggles specific to ChatGPT within this round
-  thinkSynthForChatGPT?: boolean;
-  onToggleThinkSynthForChatGPT?: (roundUserTurnId: string) => void;
-  thinkEnsembleForChatGPT?: boolean;
-  onToggleThinkEnsembleForChatGPT?: (roundUserTurnId: string) => void;
+  // Note: All props related to the action bar have been removed.
+  // The UserTurnBlock is now a pure display component for the prompt.
 }
 
-const UserTurnBlock = ({ userTurn, isExpanded, onToggle, synthSelected = {}, onToggleSynth, onRunSynthesis, ensembleSelected = null, onSelectEnsemble, onRunEnsemble, eligibleMap = {}, ensembleEligibleMap = {}, disableSynthesisRun = false, disableEnsembleRun = false, thinkSynthForChatGPT = false, onToggleThinkSynthForChatGPT, thinkEnsembleForChatGPT = false, onToggleThinkEnsembleForChatGPT }: UserTurnBlockProps) => {
+const UserTurnBlock = ({ userTurn, isExpanded, onToggle }: UserTurnBlockProps) => {
+  // ...
+
   const date = new Date(userTurn.createdAt);
   const readableTimestamp = date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
   const isoTimestamp = date.toISOString();
@@ -163,27 +151,7 @@ const UserTurnBlock = ({ userTurn, isExpanded, onToggle, synthSelected = {}, onT
               {userTurn.text.replace(/\n/g, ' ')}
             </div>
         )}
-        {/* Round Action Bar */}
-        <div style={{ marginTop: '8px' }}>
-          <TurnActionBar
-            isLoading={false}
-            roundUserTurnId={userTurn.id}
-            synthSelected={synthSelected}
-            onToggleSynth={onToggleSynth!}
-            onRunSynthesis={onRunSynthesis!}
-            ensembleSelected={ensembleSelected}
-            onSelectEnsemble={onSelectEnsemble!}
-            onRunEnsemble={onRunEnsemble!}
-            eligibleMap={eligibleMap}
-            ensembleEligibleMap={ensembleEligibleMap}
-            disableSynthesisRun={disableSynthesisRun}
-            disableEnsembleRun={disableEnsembleRun}
-            thinkSynthForChatGPT={thinkSynthForChatGPT}
-            onToggleThinkSynthForChatGPT={() => onToggleThinkSynthForChatGPT?.(userTurn.id)}
-            thinkEnsembleForChatGPT={thinkEnsembleForChatGPT}
-            onToggleThinkEnsembleForChatGPT={() => onToggleThinkEnsembleForChatGPT?.(userTurn.id)}
-          />
-        </div>
+        
       </div>
     </div>
   );

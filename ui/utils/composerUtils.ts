@@ -23,19 +23,22 @@ export const extractComposableContent = (aiTurn: AiTurn): ComposableSource[] => 
     });
   }
   
-  // Extract synthesis responses (can have multiple)
+  // Extract synthesis responses (multi-take arrays per provider)
   if (aiTurn.synthesisResponses) {
-    Object.entries(aiTurn.synthesisResponses).forEach(([providerId, response]) => {
-      if (response.text?.trim()) {
-        sources.push({
-          id: `synthesis-${providerId}-${Date.now()}`,
-          type: 'synthesis',
-          providerId,
-          content: response.text,
-          status: response.status,
-          metadata: response.meta
-        });
-      }
+    Object.entries(aiTurn.synthesisResponses).forEach(([providerId, responses]) => {
+      const list = Array.isArray(responses) ? responses : [responses as unknown as ProviderResponse];
+      list.forEach((response, idx) => {
+        if (response?.text?.trim()) {
+          sources.push({
+            id: `synthesis-${providerId}-${idx}-${Date.now()}`,
+            type: 'synthesis',
+            providerId,
+            content: response.text,
+            status: response.status,
+            metadata: response.meta
+          });
+        }
+      });
     });
   }
   
@@ -51,19 +54,22 @@ export const extractComposableContent = (aiTurn: AiTurn): ComposableSource[] => 
     });
   }
   
-  // Extract ensemble responses (can have multiple)
+  // Extract ensemble responses (multi-take arrays per provider)
   if (aiTurn.ensembleResponses) {
-    Object.entries(aiTurn.ensembleResponses).forEach(([providerId, response]) => {
-      if (response.text?.trim()) {
-        sources.push({
-          id: `ensemble-${providerId}-${Date.now()}`,
-          type: 'ensemble',
-          providerId,
-          content: response.text,
-          status: response.status,
-          metadata: response.meta
-        });
-      }
+    Object.entries(aiTurn.ensembleResponses).forEach(([providerId, responses]) => {
+      const list = Array.isArray(responses) ? responses : [responses as unknown as ProviderResponse];
+      list.forEach((response, idx) => {
+        if (response?.text?.trim()) {
+          sources.push({
+            id: `ensemble-${providerId}-${idx}-${Date.now()}`,
+            type: 'ensemble',
+            providerId,
+            content: response.text,
+            status: response.status,
+            metadata: response.meta
+          });
+        }
+      });
     });
   }
   

@@ -121,20 +121,19 @@ const App = () => {
   const sizeMapRef = useRef<Record<string, number>>({});
   const historyOverlayRef = useRef<HTMLDivElement | null>(null);
   const streamingBufferRef = useRef<StreamingBuffer | null>(null);
+  // Valid provider ids for synthesis
+  type ValidProvider = 'claude' | 'gemini' | 'chatgpt';
   
   // Update refs when state changes
   useEffect(() => {
     sessionIdRef.current = currentSessionId;
   }, [currentSessionId]);
 
-  // Helper: aggregate all provider responses from every container on an AiTurn
-  const getAllProviderResponses = (aiTurn: AiTurn): Record<string, ProviderResponse> => {
-    return {
-      ...(aiTurn.batchResponses || {}),
-      ...(aiTurn.synthesisResponses || {}),
-      ...(aiTurn.ensembleResponses || {}),
-      ...(aiTurn.providerResponses || {}) // legacy
-    } as Record<string, ProviderResponse>;
+  // Removed ambiguous helper getAllProviderResponses to prevent synthesis/ensemble from shadowing batch.
+
+  // Helper: get pristine batch provider responses only (for re-runs)
+  const getBatchProviderResponses = (aiTurn: AiTurn): Record<string, ProviderResponse> => {
+    return { ...(aiTurn.batchResponses || {}) };
   };
 
   // ============================================================================
@@ -194,11 +193,28 @@ const App = () => {
       const updatedAiTurn = updater(updated[actualIndex] as AiTurn);
       updated[actualIndex] = updatedAiTurn;
 
-      // Check if all providers are complete across all containers
-      const allResponses = getAllProviderResponses(updatedAiTurn);
-      const allComplete = Object.values(allResponses).every(r => 
-        r.status === 'completed' || r.status === 'error'
-      );
+      // Explicitly check completion across known containers without merging helpers
+      const latestFromArrayMap = (container?: Record<string, ProviderResponse[] | ProviderResponse>): Record<string, ProviderResponse> => {
+        const out: Record<string, ProviderResponse> = {};
+        if (!container) return out;
+        Object.entries(container as Record<string, any>).forEach(([pid, resp]) => {
+          if (Array.isArray(resp)) {
+            const last = resp[resp.length - 1];
+            if (last) out[pid] = last;
+          } else if (resp && typeof resp === 'object') {
+            out[pid] = resp as ProviderResponse;
+          }
+        });
+        return out;
+      };
+
+      const allResponses: Record<string, ProviderResponse> = {
+        ...(updatedAiTurn.batchResponses || {}),
+        ...latestFromArrayMap(updatedAiTurn.synthesisResponses),
+        ...latestFromArrayMap(updatedAiTurn.ensembleResponses),
+        ...(updatedAiTurn.providerResponses || {}) // legacy
+      };
+      const allComplete = Object.values(allResponses).every(r => r.status === 'completed' || r.status === 'error');
       
       if (allComplete) {
         setIsLoading(false);
@@ -253,11 +269,28 @@ const App = () => {
       const updatedAiTurn = updater(updated[idx] as AiTurn);
       updated[idx] = updatedAiTurn;
 
-      // Check completion across all response containers
-      const allResponses = getAllProviderResponses(updatedAiTurn);
-      const allComplete = Object.values(allResponses).every(r => 
-        r.status === 'completed' || r.status === 'error'
-      );
+      // Explicitly check completion across known containers without merging helpers
+      const latestFromArrayMap = (container?: Record<string, ProviderResponse[] | ProviderResponse>): Record<string, ProviderResponse> => {
+        const out: Record<string, ProviderResponse> = {};
+        if (!container) return out;
+        Object.entries(container as Record<string, any>).forEach(([pid, resp]) => {
+          if (Array.isArray(resp)) {
+            const last = resp[resp.length - 1];
+            if (last) out[pid] = last;
+          } else if (resp && typeof resp === 'object') {
+            out[pid] = resp as ProviderResponse;
+          }
+        });
+        return out;
+      };
+
+      const allResponses: Record<string, ProviderResponse> = {
+        ...(updatedAiTurn.batchResponses || {}),
+        ...latestFromArrayMap(updatedAiTurn.synthesisResponses),
+        ...latestFromArrayMap(updatedAiTurn.ensembleResponses),
+        ...(updatedAiTurn.providerResponses || {}) // legacy
+      };
+      const allComplete = Object.values(allResponses).every(r => r.status === 'completed' || r.status === 'error');
 
       if (allComplete) {
         setIsLoading(false);
@@ -318,42 +351,7 @@ const App = () => {
     return { userIndex, user: messages[userIndex] as UserTurn, aiIndex, ai };
   }, [messages]);
 
-  const findExistingSynthesisTurnForRound = useCallback((userTurnId: string): { index: number; turn: AiTurn } | null => {
-    const round = findRoundForUserTurn(userTurnId);
-    if (!round) return null;
-    const { userIndex } = round;
-    for (let i = userIndex + 1; i < messages.length; i++) {
-      const t = messages[i];
-      if (t.type === 'user') break;
-      if (t.type === 'ai') {
-        const ai = t as AiTurn;
-        if (!ai.isSynthesisAnswer && !ai.isEnsembleAnswer) break;
-        if (ai.isSynthesisAnswer && (ai.meta as any)?.synthForUserTurnId === userTurnId) {
-          return { index: i, turn: ai };
-        }
-      }
-    }
-    return null;
-  }, [messages, findRoundForUserTurn]);
-
-  const findExistingEnsembleTurnForRound = useCallback((userTurnId: string): { index: number; turn: AiTurn } | null => {
-    const round = findRoundForUserTurn(userTurnId);
-    if (!round) return null;
-    const { userIndex } = round;
-    for (let i = userIndex + 1; i < messages.length; i++) {
-      const t = messages[i];
-      if (t.type === 'user') break;
-      if (t.type === 'ai') {
-        const ai = t as AiTurn;
-        if (!ai.isSynthesisAnswer && !ai.isEnsembleAnswer) break;
-        if (ai.isEnsembleAnswer && (ai.meta as any)?.synthForUserTurnId === userTurnId) {
-          return { index: i, turn: ai };
-        }
-      }
-    }
-    return null;
-  }, [messages, findRoundForUserTurn]);
-
+  // Helper to find the first insertion index before an AI turn
   const findFirstInsertIndexBeforeAi = useCallback((userTurnId: string) => {
     const round = findRoundForUserTurn(userTurnId);
     if (!round) return -1;
@@ -402,8 +400,9 @@ const App = () => {
     const outputs = Object.values(ai?.providerResponses || {}).filter(r => r.status === 'completed' && r.text?.trim());
     const enoughOutputs = outputs.length >= 2;
 
-    const existingSynth = findExistingSynthesisTurnForRound(userTurnId);
-    const alreadySynthPids = existingSynth ? Object.keys(existingSynth.turn.providerResponses || {}) : [];
+    // Check existing synthesis and ensemble responses in the unified AiTurn
+    const alreadySynthPids = ai?.synthesisResponses ? Object.keys(ai.synthesisResponses) : [];
+    const alreadyEnsemblePids = ai?.ensembleResponses ? Object.keys(ai.ensembleResponses) : [];
 
     // Build eligibility map for Synthesis (multi-select)
     const synthMap: Record<string, { disabled: boolean; reason?: string }> = {};
@@ -422,8 +421,6 @@ const App = () => {
     });
 
     // Build eligibility map for Ensemble (single-select)
-    const existingEnsemble = findExistingEnsembleTurnForRound(userTurnId);
-    const alreadyEnsemblePids = existingEnsemble ? Object.keys(existingEnsemble.turn.providerResponses || {}) : [];
     const ensembleMap: Record<string, { disabled: boolean; reason?: string }> = {};
     LLM_PROVIDERS_CONFIG.forEach(p => {
       const contAfter = providerHasActivityAfter(p.id, aiIndex);
@@ -445,7 +442,7 @@ const App = () => {
       disableSynthesisRun: !enoughOutputs,
       disableEnsembleRun: !enoughOutputs,
     };
-  }, [findRoundForUserTurn, findExistingSynthesisTurnForRound, findExistingEnsembleTurnForRound, providerHasActivityAfter]);
+  }, [findRoundForUserTurn, providerHasActivityAfter]);
 
   // ===== Round bar handlers =====
   const handleToggleSynthForRound = useCallback((userTurnId: string, providerId: string) => {
@@ -465,11 +462,14 @@ const App = () => {
   const handleRunSynthesisForRound = useCallback(async (userTurnId: string) => {
     if (!currentSessionId || isSynthRunningRef.current) return;
 
-    const round = findRoundForUserTurn(userTurnId);
-    if (!round || !round.user || !round.ai) return;
+    const roundInfo = findRoundForUserTurn(userTurnId);
+    if (!roundInfo || !roundInfo.user || !roundInfo.ai) return;
+    
+    const { ai } = roundInfo; // The AiTurn to update
 
     const results: Record<string, string> = {};
-    Object.entries(round.ai.providerResponses || {}).forEach(([pid, resp]) => {
+    // Use only pristine batch outputs for synthesis inputs
+    Object.entries(getBatchProviderResponses(ai)).forEach(([pid, resp]) => {
       if (resp.status === 'completed' && resp.text?.trim()) results[pid] = resp.text!;
     });
     if (Object.keys(results).length < 2) return;
@@ -477,62 +477,28 @@ const App = () => {
     const selected = Object.entries(synthSelectionsByRound[userTurnId] || {})
       .filter(([_, on]) => on)
       .map(([pid]) => pid);
-    const normalized = selected.filter(pid => ['claude', 'gemini', 'chatgpt'].includes(pid)) as Array<'claude'|'gemini'|'chatgpt'>;
-    if (normalized.length === 0) return;
+    if (selected.length === 0) return;
 
-    const existing = findExistingSynthesisTurnForRound(userTurnId);
-    let synthTurnId = existing?.turn.id || `ai-synth-${userTurnId}`;
-    const insertAt = findFirstInsertIndexBeforeAi(userTurnId);
-
-    if (!existing) {
-      const initResp = normalized.reduce((acc, pid) => {
-        acc[pid] = { providerId: pid, text: '', status: 'pending', createdAt: Date.now() } as ProviderResponse;
-        return acc;
-      }, {} as Record<string, ProviderResponse>);
-      const newTurn: AiTurn = {
-        type: 'ai',
-        id: synthTurnId,
-        createdAt: Date.now(),
-        sessionId: currentSessionId,
-        isSynthesisAnswer: true,
-        meta: { synthForUserTurnId: userTurnId },
-        batchResponses: {}, // Synthesis doesn't use batch responses
-        synthesisResponses: initResp, // Store in dedicated synthesis container
-        ensembleResponses: {},
-        providerResponses: initResp // Legacy compatibility
-      };
-      setMessages(prev => {
-        const updated = [...prev];
-        updated.splice(insertAt, 0, newTurn);
-        return updated;
+    // Initialize a new take per selected provider (append to arrays)
+    updateAiTurnById(ai.id, (prevAiTurn) => {
+      const prev = prevAiTurn.synthesisResponses || {};
+      const next: Record<string, ProviderResponse[]> = { ...prev } as Record<string, ProviderResponse[]>;
+      selected.forEach((pid) => {
+        const arr = Array.isArray(next[pid]) ? next[pid]! : (next[pid] ? [next[pid] as unknown as ProviderResponse] : []);
+        arr.push({ providerId: pid, text: '', status: 'pending', createdAt: Date.now() });
+        next[pid] = arr;
       });
-    } else {
-      setMessages(prev => {
-        const updated = [...prev];
-        const idx = updated.findIndex(t => t.id === existing.turn.id);
-        if (idx >= 0) {
-          const ai = updated[idx] as AiTurn;
-          const merged = { ...(ai.providerResponses || {}) } as Record<string, ProviderResponse>;
-          normalized.forEach(pid => {
-            if (!merged[pid]) {
-              merged[pid] = { providerId: pid, text: '', status: 'pending', createdAt: Date.now() } as ProviderResponse;
-            }
-          });
-          updated[idx] = { ...ai, providerResponses: merged } as AiTurn;
-        }
-        return updated;
-      });
-    }
+      return { ...prevAiTurn, synthesisResponses: next };
+    });
 
-    // Stream into this synthesis turn
-    activeAiTurnIdRef.current = synthTurnId;
+    activeAiTurnIdRef.current = ai.id; // Stream into the correct, existing turn
     setIsLoading(true);
     setUiPhase('streaming');
     setCurrentAppStep('synthesis');
     isSynthRunningRef.current = true;
 
-    const originalPrompt = round.user.text || '';
-    const idempotencyToken = `${currentSessionId}:${userTurnId}:synth:${normalized.sort().join('+')}`;
+    const originalPrompt = roundInfo.user.text || '';
+    const idempotencyToken = `${currentSessionId}:${userTurnId}:synth:${selected.sort().join('+')}`;
 
     try {
       if (typeof api.ensurePort === 'function') {
@@ -542,17 +508,16 @@ const App = () => {
           lastAttachedPortRef.current = port;
         }
       }
-      if (normalized.length === 1) {
-        setLastSynthesisModel(normalized[0]);
+      if (selected.length === 1) {
+        setLastSynthesisModel(selected[0]);
       }
-      // fan-out supported by backend API; pass array when >1
       await api.executeSynthesis(
         currentSessionId,
         originalPrompt,
         results,
-        normalized.length === 1 ? normalized[0] : normalized,
+        (selected.length === 1 ? (selected[0] as ValidProvider) : (selected as ValidProvider[])),
         uiTabId,
-        { idempotencyToken, useThinking: !!thinkSynthByRound[userTurnId] && normalized.includes('chatgpt') }
+        { idempotencyToken, useThinking: !!thinkSynthByRound[userTurnId] && selected.includes('chatgpt') }
       );
     } catch (err) {
       console.error('Synthesis run failed:', err);
@@ -562,7 +527,7 @@ const App = () => {
     } finally {
       isSynthRunningRef.current = false;
     }
-  }, [currentSessionId, synthSelectionsByRound, uiTabId, findRoundForUserTurn, findExistingSynthesisTurnForRound, findFirstInsertIndexBeforeAi, thinkSynthByRound]);
+  }, [currentSessionId, synthSelectionsByRound, uiTabId, findRoundForUserTurn, thinkSynthByRound, updateAiTurnById]);
 
   // Build the Ensembler prompt using provided fixed template from spec
   
@@ -570,11 +535,14 @@ const App = () => {
   const handleRunEnsembleForRound = useCallback(async (userTurnId: string) => {
     if (!currentSessionId) return;
 
-    const round = findRoundForUserTurn(userTurnId);
-    if (!round || !round.user || !round.ai) return;
+    const roundInfo = findRoundForUserTurn(userTurnId);
+    if (!roundInfo || !roundInfo.user || !roundInfo.ai) return;
+
+    const { user: roundUser, ai: roundAi } = roundInfo;
 
     const modelOutputs: Record<string, string> = {};
-    Object.entries(round.ai.providerResponses || {}).forEach(([pid, resp]) => {
+    // Use only pristine batch outputs for ensemble inputs
+    Object.entries(getBatchProviderResponses(roundAi)).forEach(([pid, resp]) => {
       if (resp.status === 'completed' && resp.text?.trim()) modelOutputs[pid] = resp.text!;
     });
     if (Object.keys(modelOutputs).length < 2) return;
@@ -582,51 +550,24 @@ const App = () => {
     const ensemblerProvider = ensembleSelectionByRound[userTurnId];
     if (!ensemblerProvider) return;
 
-    const ensemblerPrompt = buildEnsemblerPrompt(round.user.text || '', modelOutputs);
+    const ensemblerPrompt = buildEnsemblerPrompt(roundUser.text || '', modelOutputs);
 
     setIsLoading(true);
     setUiPhase('streaming');
     setCurrentAppStep('synthesis');
 
-    const existing = findExistingEnsembleTurnForRound(userTurnId);
-    const aiTurnId = existing?.turn.id || `ai-ensemble-${userTurnId}`;
-    const insertAt = findFirstInsertIndexBeforeAi(userTurnId);
-
-    if (!existing) {
-      const aiTurn: AiTurn = {
-        type: 'ai',
-        id: aiTurnId,
-        createdAt: Date.now(),
-        sessionId: currentSessionId,
-        isEnsembleAnswer: true,
-        meta: { synthForUserTurnId: userTurnId },
-        batchResponses: {}, // Ensemble doesn't use batch responses
-        synthesisResponses: {},
-        ensembleResponses: {
-          [ensemblerProvider]: {
-            providerId: ensemblerProvider,
-            text: '',
-            status: 'pending',
-            createdAt: Date.now()
-          }
-        },
-        providerResponses: { // Legacy compatibility
-          [ensemblerProvider]: {
-            providerId: ensemblerProvider,
-            text: '',
-            status: 'pending',
-            createdAt: Date.now()
-          }
-        }
-      };
-      setMessages(prev => {
-        const updated = [...prev];
-        updated.splice(insertAt, 0, aiTurn);
-        return updated;
-      });
-    }
-
-    activeAiTurnIdRef.current = aiTurnId;
+    // Initialize a new ensemble take (append to array for the selected provider)
+    updateAiTurnById(roundAi.id, (prevAiTurn) => {
+      const prev = prevAiTurn.ensembleResponses || {};
+      const next: Record<string, ProviderResponse[]> = { ...prev } as Record<string, ProviderResponse[]>;
+      const pid = ensemblerProvider;
+      const arr = Array.isArray(next[pid]) ? next[pid]! : (next[pid] ? [next[pid] as unknown as ProviderResponse] : []);
+      arr.push({ providerId: pid, text: '', status: 'pending', createdAt: Date.now() });
+      next[pid] = arr;
+      return { ...prevAiTurn, ensembleResponses: next };
+    });
+    
+    activeAiTurnIdRef.current = roundAi.id; // Stream into the correct, existing turn
 
     try {
       const handlePortMessage = createPortMessageHandler();
@@ -651,7 +592,7 @@ const App = () => {
       setUiPhase('awaiting_action');
       activeAiTurnIdRef.current = null;
     }
-  }, [currentSessionId, ensembleSelectionByRound, uiTabId, isVisibleMode, buildEnsemblerPrompt, findRoundForUserTurn, findExistingEnsembleTurnForRound, findFirstInsertIndexBeforeAi, createPortMessageHandler]);
+  }, [currentSessionId, ensembleSelectionByRound, uiTabId, isVisibleMode, findRoundForUserTurn, thinkEnsembleByRound, updateAiTurnById]);
 
   // Utility: Estimate item size for virtual list (fallback before actual measure)
   const itemSizeEstimator = useCallback((index: number): number => {
@@ -681,9 +622,13 @@ const App = () => {
     // Hide standalone ensemble rows when grouped under synthesis for the same round
     if (aiTurn.isEnsembleAnswer) {
       const roundUserId = (aiTurn.meta as any)?.synthForUserTurnId;
-      const synthForRound = roundUserId ? findExistingSynthesisTurnForRound(roundUserId) : null;
-      if (synthForRound) {
-        return 1; // effectively hide the ensemble row; content is rendered under synthesis
+      if (roundUserId) {
+        // Check if there's a synthesis turn for this round that contains ensemble responses
+        const round = findRoundForUserTurn(roundUserId);
+        const synthTurn = round?.ai;
+        if (synthTurn?.isSynthesisAnswer && synthTurn.ensembleResponses && Object.keys(synthTurn.ensembleResponses).length > 0) {
+          return 1; // effectively hide the ensemble row; content is rendered under synthesis
+        }
       }
     }
 
@@ -968,60 +913,77 @@ const App = () => {
   function createPortMessageHandler() {
     // Initialize streaming buffer on first call
     if (!streamingBufferRef.current) {
-      streamingBufferRef.current = new StreamingBuffer((providerId, delta, status, responseType?: 'batch' | 'synthesis' | 'ensemble') => {
+      streamingBufferRef.current = new StreamingBuffer((providerId, delta, status, responseType: 'batch' | 'synthesis' | 'ensemble') => {
         const activeId = activeAiTurnIdRef.current;
         if (!providerId || !activeId) return;
+        if (!responseType) {
+          console.warn('StreamingBuffer update missing responseType; ignoring update for provider:', providerId);
+          return;
+        }
         
         updateAiTurnById(activeId, aiTurn => {
           if (aiTurn.id !== activeId) return aiTurn;
 
           let updatedAiTurn = { ...aiTurn };
-
-          // Determine response type if not explicitly provided
-          const type = responseType || (
-            aiTurn.isSynthesisAnswer ? 'synthesis' :
-            aiTurn.isEnsembleAnswer ? 'ensemble' :
-            'batch'
-          );
-
-          // Route to the correct container based on response type
-          if (type === 'synthesis') {
-            // Store in synthesisResponses (multiple syntheses possible)
-            const existingResponses = aiTurn.synthesisResponses || {};
-            const existing = existingResponses[providerId] || { 
-              providerId, text: '', status: 'pending', createdAt: Date.now() 
-            } as ProviderResponse;
-            const newText = status === 'completed' ? delta : (existing.text + delta);
+          
+          // Route to the correct container based on explicit responseType
+          if (responseType === 'synthesis') {
+            // Store in synthesisResponses (multi-take arrays per provider)
+            const existingMap = aiTurn.synthesisResponses || {};
+            const arr = Array.isArray(existingMap[providerId])
+              ? (existingMap[providerId] as ProviderResponse[])
+              : (existingMap[providerId]
+                  ? [existingMap[providerId] as unknown as ProviderResponse]
+                  : []);
+            const last = arr[arr.length - 1];
+            const base = (last && last.status !== 'completed' && last.status !== 'error')
+              ? last
+              : { providerId, text: '', status: 'pending', createdAt: Date.now() } as ProviderResponse;
+            const newText = status === 'completed' ? delta : (base.text + delta);
+            const updatedItem: ProviderResponse = {
+              ...base,
+              text: newText,
+              status: status as ProviderResponse['status'],
+              updatedAt: Date.now()
+            };
+            const nextArr = (last && base === last)
+              ? [...arr.slice(0, -1), updatedItem]
+              : [...arr, updatedItem];
             updatedAiTurn.synthesisResponses = {
-              ...existingResponses,
-              [providerId]: {
-                ...existing,
-                text: newText,
-                status: status as ProviderResponse['status'],
-                updatedAt: Date.now()
-              }
+              ...existingMap,
+              [providerId]: nextArr
             };
-            // Keep legacy field for backward compatibility
-            updatedAiTurn.synthesisResponse = updatedAiTurn.synthesisResponses[providerId];
+            // Legacy field for backward compatibility points to latest item
+            updatedAiTurn.synthesisResponse = updatedItem;
             updatedAiTurn.isSynthesisAnswer = true;
-          } else if (type === 'ensemble') {
-            // Store in ensembleResponses (multiple ensembles possible)
-            const existingResponses = aiTurn.ensembleResponses || {};
-            const existing = existingResponses[providerId] || { 
-              providerId, text: '', status: 'pending', createdAt: Date.now() 
-            } as ProviderResponse;
-            const newText = status === 'completed' ? delta : (existing.text + delta);
-            updatedAiTurn.ensembleResponses = {
-              ...existingResponses,
-              [providerId]: {
-                ...existing,
-                text: newText,
-                status: status as ProviderResponse['status'],
-                updatedAt: Date.now()
-              }
+          } else if (responseType === 'ensemble') {
+            // Store in ensembleResponses (multi-take arrays per provider)
+            const existingMap = aiTurn.ensembleResponses || {};
+            const arr = Array.isArray(existingMap[providerId])
+              ? (existingMap[providerId] as ProviderResponse[])
+              : (existingMap[providerId]
+                  ? [existingMap[providerId] as unknown as ProviderResponse]
+                  : []);
+            const last = arr[arr.length - 1];
+            const base = (last && last.status !== 'completed' && last.status !== 'error')
+              ? last
+              : { providerId, text: '', status: 'pending', createdAt: Date.now() } as ProviderResponse;
+            const newText = status === 'completed' ? delta : (base.text + delta);
+            const updatedItem: ProviderResponse = {
+              ...base,
+              text: newText,
+              status: status as ProviderResponse['status'],
+              updatedAt: Date.now()
             };
-            // Keep legacy field for backward compatibility
-            updatedAiTurn.ensembleResponse = updatedAiTurn.ensembleResponses[providerId];
+            const nextArr = (last && base === last)
+              ? [...arr.slice(0, -1), updatedItem]
+              : [...arr, updatedItem];
+            updatedAiTurn.ensembleResponses = {
+              ...existingMap,
+              [providerId]: nextArr
+            };
+            // Legacy field for backward compatibility points to latest item
+            updatedAiTurn.ensembleResponse = updatedItem;
             updatedAiTurn.isEnsembleAnswer = true;
           } else {
             // Store in batchResponses (GPT, Claude, Gemini)
@@ -1074,17 +1036,27 @@ const App = () => {
       }
 
       // Helper to buffer streaming updates or apply complete updates immediately
-      const updateProvider = (providerId: string, text: string | undefined, isPartial?: boolean, status?: string) => {
+      const updateProvider = (
+        providerId: string,
+        text: string | undefined,
+        responseType: 'batch' | 'synthesis' | 'ensemble' | undefined,
+        isPartial?: boolean,
+        status?: string
+      ) => {
         if (!providerId || !text) return;
+        if (!responseType) {
+          console.warn('Backend message missing responseType; defaulting to batch for provider:', providerId);
+          responseType = 'batch';
+        }
         
         const finalStatus = status || (isPartial ? 'streaming' : 'completed');
         
         if (isPartial && finalStatus === 'streaming') {
           // Buffer streaming deltas for batched updates
-          streamingBufferRef.current?.addDelta(providerId, text, finalStatus);
+          streamingBufferRef.current?.addDelta(providerId, text, finalStatus, responseType);
         } else {
           // Immediate update for completion/errors
-          streamingBufferRef.current?.setComplete(providerId, text, finalStatus);
+          streamingBufferRef.current?.setComplete(providerId, text, finalStatus, responseType);
         }
       };
 
@@ -1096,14 +1068,16 @@ const App = () => {
         message.results.forEach((r: any) => {
           const providerId = r.provider || r.providerId || r.providerKey;
           const text = r.result || r.response || r.resultText;
-          updateProvider(providerId, text, false, 'completed');
+          const respType = r.responseType || message.responseType;
+          updateProvider(providerId, text, respType, false, 'completed');
         });
         return;
       } else if (message.results && typeof message.results === 'object') {
         try {
           Object.entries(message.results).forEach(([pid, obj]: any) => {
             const text = obj?.text || obj?.response || obj?.result || '';
-            updateProvider(pid, text, false, 'completed');
+            const respType = obj?.responseType || message.responseType;
+            updateProvider(pid as string, text, respType, false, 'completed');
           });
           return;
         } catch {}
@@ -1114,8 +1088,9 @@ const App = () => {
         const prov = message.data.provider || message.data.providerId;
         const txt = message.data.result || message.data.text || message.data.response;
         const partial = !!message.data.isPartial || !!message.data.partial;
+        const respType = message.data.responseType || message.responseType;
         if (prov) {
-          updateProvider(prov, txt, partial, message.data.status);
+          updateProvider(prov, txt, respType, partial, message.data.status);
           return;
         }
       }
@@ -1132,8 +1107,9 @@ const App = () => {
         const text = message.text || message.chunk || message.partialText || message.result;
         const isPartial = !!message.isPartial || !!message.partial || typeLower.includes('partial');
         const status = message.status || (typeLower.includes('complete') ? 'completed' : undefined);
+        const respType = message.responseType as ('batch' | 'synthesis' | 'ensemble' | undefined);
         
-        updateProvider(providerId, text, isPartial, status);
+        updateProvider(providerId, text, respType, isPartial, status);
         
         // Capture provider context
         if (message.meta && providerId) {
@@ -1145,138 +1121,18 @@ const App = () => {
         return;
       }
 
-      // Hidden batch complete messages (for synthesis-first workflow) - DEPRECATED in new workflow
-      if (typeLower.includes('hiddenbatchcomplete') || message.type === 'hiddenBatchComplete') {
-        // Legacy handler - in new workflow, this is handled by HIDDEN_BATCH_REVEAL
-        console.debug('[DEPRECATED] hiddenBatchComplete message received, use HIDDEN_BATCH_REVEAL instead');
-        return;
-      }
-
-      // Ensemble complete messages (final output of the Ensembler provider) - DEPRECATED in new workflow  
-      if (typeLower.includes('ensemble_complete') || message.type === 'ensembleComplete' || message.type === 'ENSEMBLE_COMPLETE') {
-        // This is now handled above in the new workflow section
-        return;
-      }
+      
       
 
-      // Synthesis messages
-      if (typeLower.includes('synthesis')) {
-        const providerId = message.providerId || message.provider || lastSynthesisModel;
-        let synthText = message.text || message.chunk || message.partialText || message.result || '';
-        
-        if (!synthText && Array.isArray(message.payload)) {
-          synthText = message.payload.map((p: any) => p.response || p.text || '').join('');
-        }
+      // Legacy synthesis handler removed: explicit responseType routing handled above
+      // Legacy ensemble_complete handler removed: unified handling via responseType
 
-        const isPartial = !!message.isPartial || !!message.partial || typeLower.includes('partial');
-        const status = message.status || (typeLower.includes('complete') ? 'completed' : undefined);
-
-        // Find synthesis AI turn and update it
-        const synthesisTurnId = messages.find(m => 
-          m.type === 'ai' && 
-          (m as AiTurn).meta?.workflowStep === 'synthesis' && 
-          (m as AiTurn).isSynthesisAnswer
-        )?.id;
-
-        if (synthesisTurnId) {
-          updateAiTurnById(synthesisTurnId, aiTurn => {
-            const updatedAiTurn = { ...aiTurn };
-            const existingResponses = aiTurn.synthesisResponses || {};
-            const existing = existingResponses[providerId] || { 
-              providerId, text: '', status: 'pending', createdAt: Date.now() 
-            } as ProviderResponse;
-            const newText = status === 'completed' ? synthText : (existing.text + synthText);
-            updatedAiTurn.synthesisResponses = {
-              ...existingResponses,
-              [providerId]: {
-                ...existing,
-                text: newText,
-                status: status as ProviderResponse['status'],
-                updatedAt: Date.now()
-              }
-            };
-            updatedAiTurn.providerResponses = updatedAiTurn.synthesisResponses;
-            
-            // If synthesis is complete, reveal ensemble turn
-            if (status === 'completed') {
-              setMessages(prev => prev.map(m => {
-                if (m.type === 'ai' && (m as AiTurn).meta?.workflowStep === 'ensemble') {
-                  return { ...m, isHidden: false };
-                }
-                return m;
-              }));
-            }
-            
-            return updatedAiTurn;
-          });
-        }
-        return;
-      }
-
-      // Ensemble complete messages - update ensemble AI turn
-      if (typeLower.includes('ensemble_complete') || message.type === 'ensembleComplete' || message.type === 'ENSEMBLE_COMPLETE') {
-        const text = message.text || message.result || message.chunk || '';
-        const providerId = message.providerId || message.provider || 'ensemble';
-        
-        // Find ensemble AI turn and update it
-        const ensembleTurnId = messages.find(m => 
-          m.type === 'ai' && 
-          (m as AiTurn).meta?.workflowStep === 'ensemble'
-        )?.id;
-
-        if (ensembleTurnId && text) {
-          updateAiTurnById(ensembleTurnId, aiTurn => {
-            const ok = message.ok !== false;
-            const meta = message.meta || {};
-            const providerResponse: ProviderResponse = {
-              providerId,
-              text,
-              status: ok ? 'completed' : 'error',
-              error: ok ? undefined : (message.error || 'Ensemble error'),
-              meta: { ...meta },
-              createdAt: Date.now(),
-              updatedAt: Date.now()
-            };
-            
-            const updatedAiTurn = {
-              ...aiTurn,
-              isEnsembleAnswer: true,
-              ensembleResponses: {
-                [providerId]: providerResponse
-              },
-              providerResponses: {
-                [providerId]: providerResponse
-              }
-            };
-            
-            // If ensemble is complete, reveal hidden batch turn
-            if (ok) {
-              setMessages(prev => prev.map(m => {
-                if (m.type === 'ai' && (m as AiTurn).meta?.workflowStep === 'hiddenBatch') {
-                  return { ...m, isHidden: false };
-                }
-                return m;
-              }));
-            }
-            
-            return updatedAiTurn;
-          });
-        }
-        return;
-      }
-
-      // Hidden batch reveal messages - update hidden batch AI turn
+      // Hidden batch reveal messages - update the unified AI turn
       if (typeLower.includes('hidden_batch_reveal') || message.type === 'HIDDEN_BATCH_REVEAL') {
         if (!message.batchResults) return;
         
-        // Find hidden batch AI turn and update it
-        const hiddenBatchTurnId = messages.find(m => 
-          m.type === 'ai' && 
-          (m as AiTurn).meta?.workflowStep === 'hiddenBatch'
-        )?.id;
-
-        if (hiddenBatchTurnId) {
-          updateAiTurnById(hiddenBatchTurnId, aiTurn => {
+        if (activeAiTurnIdRef.current) {
+          updateAiTurnById(activeAiTurnIdRef.current, aiTurn => {
             const batchResponses: Record<string, ProviderResponse> = {};
             Object.entries(message.batchResults).forEach(([providerId, text]: [string, any]) => {
               batchResponses[providerId] = {
@@ -1290,9 +1146,14 @@ const App = () => {
             
             return {
               ...aiTurn,
-              batchResponses,
-              providerResponses: batchResponses,
-              hiddenBatchOutputs: message.batchResults
+              batchResponses: {
+                ...aiTurn.batchResponses,
+                ...batchResponses
+              },
+              hiddenBatchOutputs: {
+                ...aiTurn.hiddenBatchOutputs,
+                ...message.batchResults
+              }
             };
           });
         }
@@ -1305,7 +1166,7 @@ const App = () => {
         setIsLoading(false);
         const providerId = message.providerId || message.provider;
         if (providerId) {
-          updateProvider(providerId, `Error: ${message.error || 'Unknown'}`, false, 'error');
+          updateProvider(providerId, `Error: ${message.error || 'Unknown'}`, undefined, false, 'error');
         }
         return;
       }
@@ -1346,22 +1207,21 @@ const App = () => {
     const shouldUseSynthesis = synthesisProvider && activeProviders.length > 1;
     
     if (shouldUseSynthesis) {
-      // Create synthesis AI turn
-      const synthesisAiTurn: AiTurn = {
+      // Create a single unified AI turn that will be progressively filled with all response types
+      const unifiedAiTurn: AiTurn = {
         type: 'ai',
         id: synthesisTurnId,
         createdAt: baseTimestamp,
         sessionId: currentSessionId,
-        isSynthesisAnswer: true,
-        meta: { synthForUserTurnId: userTurn.id, workflowStep: 'synthesis' },
+        meta: { synthForUserTurnId: userTurn.id },
+        // Initialize all response containers as empty - they'll be filled as data arrives
         batchResponses: {},
-        synthesisResponses: {
-          [synthesisProvider]: {
+        synthesisResponses: { [synthesisProvider]: [ { 
             providerId: synthesisProvider,
             text: '',
             status: 'pending',
             createdAt: baseTimestamp
-          }
+          }]
         },
         ensembleResponses: {},
         providerResponses: {
@@ -1371,40 +1231,11 @@ const App = () => {
             status: 'pending',
             createdAt: baseTimestamp
           }
-        }
+        },
+        hiddenBatchOutputs: {}
       };
 
-      // Create ensemble AI turn (initially hidden)
-      const ensembleAiTurn: AiTurn = {
-        type: 'ai',
-        id: ensembleTurnId,
-        createdAt: baseTimestamp + 1,
-        sessionId: currentSessionId,
-        isEnsembleAnswer: true,
-        meta: { synthForUserTurnId: userTurn.id, workflowStep: 'ensemble' },
-        batchResponses: {},
-        synthesisResponses: {},
-        ensembleResponses: {},
-        providerResponses: {},
-        isHidden: true // Initially hidden until synthesis completes
-      };
-
-      // Create hidden batch AI turn (initially hidden)
-      const hiddenBatchAiTurn: AiTurn = {
-        type: 'ai',
-        id: hiddenBatchTurnId,
-        createdAt: baseTimestamp + 2,
-        sessionId: currentSessionId,
-        meta: { synthForUserTurnId: userTurn.id, workflowStep: 'hiddenBatch' },
-        batchResponses: {},
-        synthesisResponses: {},
-        ensembleResponses: {},
-        providerResponses: {},
-        hiddenBatchOutputs: {},
-        isHidden: true // Initially hidden until ensemble completes
-      };
-
-      setMessages(prev => [...prev, synthesisAiTurn, ensembleAiTurn, hiddenBatchAiTurn]);
+      setMessages(prev => [...prev, unifiedAiTurn]);
       activeAiTurnIdRef.current = synthesisTurnId;
 
       try {
@@ -1813,20 +1644,6 @@ const App = () => {
               userTurn={turn as UserTurn}
               isExpanded={expandedUserTurns[turn.id] ?? true}
               onToggle={handleToggleUserTurn}
-              synthSelected={synthSelectionsByRound[turn.id] || {}}
-              onToggleSynth={handleToggleSynthForRound}
-              onRunSynthesis={handleRunSynthesisForRound}
-              ensembleSelected={ensembleSelectionByRound[turn.id] || null}
-              onSelectEnsemble={handleSelectEnsembleForRound}
-              onRunEnsemble={handleRunEnsembleForRound}
-              eligibleMap={synthMap}
-              ensembleEligibleMap={ensembleMap}
-              disableSynthesisRun={disableSynthesisRun}
-            disableEnsembleRun={disableEnsembleRun}
-            thinkSynthForChatGPT={!!thinkSynthByRound[turn.id]}
-            onToggleThinkSynthForChatGPT={(rid) => setThinkSynthByRound(prev => ({ ...prev, [rid]: !prev[rid] }))}
-            thinkEnsembleForChatGPT={!!thinkEnsembleByRound[turn.id]}
-            onToggleThinkEnsembleForChatGPT={(rid) => setThinkEnsembleByRound(prev => ({ ...prev, [rid]: !prev[rid] }))}
             />
           </div>
         </div>
@@ -1839,24 +1656,12 @@ const App = () => {
           {turn && isAiTurn(turn) ? (() => {
             const ai = turn as AiTurn;
 
-            // Skip hidden turns in the new workflow
-            if (ai.isHidden) {
-              return null;
-            }
-
-            // Skip standalone ensemble row; it's rendered under the Synthesis block for the round
-            if (ai.isEnsembleAnswer && (ai.meta as any)?.synthForUserTurnId) {
-              return null; // Return null instead of empty div to prevent empty blocks
-            }
 
             // Compose ensemble output under the synthesis turn for layered rendering
             let aiForRender: AiTurn = ai;
             if (ai.isSynthesisAnswer) {
-              const roundUserId = (ai.meta as any)?.synthForUserTurnId;
-              const existingEnsemble = roundUserId ? findExistingEnsembleTurnForRound(roundUserId) : null;
-              if (existingEnsemble?.turn?.ensembleResponse) {
-                aiForRender = { ...ai, ensembleResponse: existingEnsemble.turn.ensembleResponse };
-              }
+              // The synthesis turn already contains ensemble responses in the unified model
+              aiForRender = ai; // No need to merge from separate turns
             }
 
             return (
@@ -1864,6 +1669,7 @@ const App = () => {
                 aiTurn={aiForRender}
                 isLive={turn.id === activeAiTurnIdRef.current}
                 isReducedMotion={isReducedMotion}
+                isLoading={isLoading}
                 currentAppStep={currentAppStep}
                 showSourceOutputs={showSourceOutputs}
                 onToggleSourceOutputs={() => setShowSourceOutputs(prev => !prev)}
