@@ -1,159 +1,63 @@
-// src/types.ts
+// src/ui/types.ts
 
 /**
  * UI-LAYER TYPES
  * 
- * This file contains type definitions exclusively for the React UI components
- * and their state. It is decoupled from the backend's internal system contracts.
+ * This file contains the complete type definitions for the React UI.
+ * It is based on the new declarative, turn-based architecture and serves
+ * as the single source of truth for the application's data structures.
  */
 
-// import type React from 'react';
+import type { Descendant } from 'slate';
+import type { ProviderKey } from '../shared/contract'; // Corrected import path
 
-/** The current step of the UI, controlling what controls are shown */
+// =============================================================================
+// CORE UI STATE, CONFIGURATION & ENUMS
+// =============================================================================
+
+/** The current high-level step of the UI, controlling what major controls are shown. */
 export type AppStep = 'initial' | 'awaitingSynthesis' | 'synthesis' | 'synthesisDone';
 
-/** Defines the allowed LLM providers for the synthesis step */
-export type SynthesisProvider = 'claude' | 'gemini' | 'chatgpt';
+/** The UI's finite state for core user interactions. */
+export type UiPhase = 'idle' | 'streaming' | 'awaiting_action';
 
-/** Defines the properties for a supported LLM provider for UI rendering */
+/** Defines the primary view mode of the application. */
+export enum ViewMode {
+  CHAT = 'chat',
+  COMPOSER = 'composer',
+  HISTORY = 'history' // Kept from original
+}
+
+/** Defines the properties for rendering a supported LLM provider in the UI. */
 export interface LLMProvider {
-  id: string;
+  id: ProviderKey | string;
   name: string;
   hostnames: string[];
   color: string;
   logoBgClass: string;
   icon?: any;
-  emoji?: string; // optional UI emoji for pills/badges
-}
-
-// Lane/Rail types for the 3+rail pattern
-export type LanePosition = 'left' | 'right';
-
-export interface LaneProps {
-  providerId: string;
-}
-
-export interface RailCard {
-  providerId: string;
-  streaming?: boolean;
-  unread?: boolean;
-  error?: boolean;
-}
-
-/** The data structure for a single AI model's response within a message block */
-export interface LLMStreamData {
-  providerId: string;
-  firstSentenceSummary: string;
-  fullOutput: string;
-  isStreamingSummary: boolean;
-  isStreamingOutput: boolean;
-  isExpanded: boolean;
-}
-
-/** The core data structure for a single message (user or AI) in the chat log */
-export interface Message {
-  id: string;
-  type: 'user' | 'ai';
-  sessionId: string | null;
-  text?: string; // For user messages
-  overallSummary?: string; // For AI synthesis messages
-  llmData?: LLMStreamData[]; // For multi-model AI responses
-  isOverallSummaryStreaming?: boolean;
-  isFinalSynthesis?: boolean;
-  timestamp: number;
-}
-
-/** The data structure for a single session in the history panel */
-export interface ChatSession {
-  id: string;
-  sessionId: string;
-  input?: string;
-  workflowId?: string;
-  startTime: number;
-  lastActivity: number;
-  title: string;
-  firstMessage?: string;
-  messageCount: number;
-  messages?: Message[]; // Optional full message history for rehydration
-}
-
-/** The shape of the response when fetching the list of chat sessions for the history panel */
-export interface HistoryApiResponse {
-  sessions: ChatSession[];
-}
-
-// Backend session detail (full transcript + continuation contexts)
-export interface BackendRoundProviderEntry {
-  text: string;
-  meta?: any;
-}
-
-export interface BackendRound {
-  id: string;
-  createdAt: number;
-  completedAt?: number;
-  user: { text: string; createdAt: number };
-  providers: Record<string, BackendRoundProviderEntry>;
-}
-
-export interface BackendFullSession {
-  id: string;
-  sessionId: string;
-  title: string;
-  createdAt: number;
-  lastActivity: number;
-  turns: BackendRound[];
-  providerContexts: ProviderContinuationContexts;
-}
-
-export interface BackendMessage {
-  type: 'WORKFLOW_STEP_UPDATE' | 'WORKFLOW_COMPLETE' | 'SYNTHESIS_COMPLETE' | 'SYNTHESIS_PARTIAL' | 'WORKFLOW_FAILED' | 'BATCH_COMPLETE' | 'BATCH_PARTIAL' | 'HIDDEN_BATCH_COMPLETE' | 'HIDDEN_BATCH_PARTIAL';
-  sessionId: string;
-  data?: {
-    providerKey: string;
-    result: string;
-    threadUrl?: string | null;
-  };
-  results?: Array<{
-    provider: string;
-    result: string;
-    threadUrl?: string;
-  }>;
-  payload?: {
-    successCount?: number;
-    failCount?: number;
-    [key: string]: unknown;
-  };
-  error?: string;
+  emoji?: string;
 }
 
 // =============================================================================
-// TURN-BASED CHAT MODEL (New Architecture - Additive, Non-Breaking)
+// CHAT TURN-BASED DATA MODEL (New Architecture)
 // =============================================================================
 
-/** Status of a provider's response in the turn-based model */
+/** The status of a provider's response within an AiTurn. */
 export type ProviderResponseStatus = 'pending' | 'streaming' | 'completed' | 'error';
 
-/** A provider's response within a turn - replaces individual state tracking */
+/** Represents a single provider's response. This is the core building block for an AiTurn. */
 export interface ProviderResponse {
-  // optional providerId here for convenience when extracted from legacy formats
-  providerId?: string;
+  providerId: ProviderKey | string;
   text: string;
   status: ProviderResponseStatus;
   error?: string;
-  // align naming with backend `meta` used across the service worker
-  meta?: {
-    threadUrl?: string;
-    tokensUsed?: number;
-    responseTime?: number;
-    [key: string]: any;
-  };
-  // timestamps to aid migration and ordering
+  meta?: { [key: string]: any };
   createdAt?: number;
   updatedAt?: number;
 }
 
-/** User turn in the conversation */
+/** Represents a turn initiated by the user. */
 export interface UserTurn {
   type: 'user';
   id: string;
@@ -162,104 +66,104 @@ export interface UserTurn {
   sessionId: string | null;
 }
 
-/** AI turn containing all provider responses and optional synthesis 
- * KEY PRINCIPLE: Each response type gets its OWN container - NO OVERWRITING!
+/** 
+ * Represents a turn from the AI, containing all provider responses.
+ * This structure is designed to be additive, preventing data loss on reruns.
  */
 export interface AiTurn {
   type: 'ai';
   id: string;
   createdAt: number;
   sessionId: string | null;
-  // SEPARATE CONTAINERS for each response type
-  batchResponses: Record<string, ProviderResponse>; // GPT, Claude, Gemini individual outputs
-  // Multi-take support: arrays per provider to track multiple runs/takes
-  synthesisResponses?: Record<string, ProviderResponse[]>; // Multiple synthesis runs (takes per provider)
-  ensembleResponses?: Record<string, ProviderResponse[]>; // Multiple ensemble runs (takes per provider)
-  // Legacy support - keep for backward compatibility
-  providerResponses?: Record<string, ProviderResponse>; // Deprecated
-  synthesisResponse?: ProviderResponse; // Deprecated - use synthesisResponses
-  ensembleResponse?: ProviderResponse; // Deprecated - use ensembleResponses
-  hiddenBatchOutputs?: Record<string, ProviderResponse>; // For synthesis-first workflow
-  // Marks if this turn is an ensemble answer (synthesis of multiple models)
-  isEnsembleAnswer?: boolean;
-  // Marks if this turn is a synthesis answer (from a single model)
-  isSynthesisAnswer?: boolean;
-  // UI visibility control for new workflow
+
+  // NEW: Each response type has its own container for clarity and robustness.
+  batchResponses: Record<string, ProviderResponse>;
+  synthesisResponses: Record<string, ProviderResponse[]>;
+  ensembleResponses: Record<string, ProviderResponse[]>;
+  hiddenBatchOutputs?: Record<string, ProviderResponse>;
+
+  isSynthesisAnswer?: boolean; // Kept for transition
+  isEnsembleAnswer?: boolean; // Kept for transition
   isHidden?: boolean;
-  // Optional metadata container; used for ensemble persistence flags and telemetry
+
   meta?: {
-    // Summary of ensemble run used for badges/tooltips/history
-    ensemble?: {
-      providers: string[]; // selected synthesizers
-      sourceProviders: string[]; // original batch providers
-      startTs?: number | null;
-      durationMs?: number;
-    };
-    synthForUserTurnId?: string; // Link to user turn for round-based synthesis
-    workflowStep?: 'synthesis' | 'ensemble' | 'hiddenBatch'; // New workflow step identifier
-    [key:string]: any;
+    synthForUserTurnId?: string;
+    [key: string]: any;
   };
+  
   composerState?: ComposerState;
+
+  
+  // DEPRECATED BUT KEPT FOR TRANSITION:
+  // This allows old component props to still function while you migrate them.
+  /** @deprecated Use `batchResponses`, `synthesisResponses`, or `ensembleResponses` instead. */
+  providerResponses?: Record<string, ProviderResponse>;
 }
 
-/** Union type for all turn-based messages */
+/** The union type for any message in the chat timeline. This is the main type for the `messages` state array. */
 export type TurnMessage = UserTurn | AiTurn;
 
-/** Type guard for user turns */
+/** Type guard to check if a turn is a UserTurn. */
 export const isUserTurn = (turn: TurnMessage): turn is UserTurn => turn.type === 'user';
 
-/** Type guard for AI turns */
+/** Type guard to check if a turn is an AiTurn. */
 export const isAiTurn = (turn: TurnMessage): turn is AiTurn => turn.type === 'ai';
 
-/** Utility type for live streaming states during turn construction */
-export type LiveProviderStates = Record<string, ProviderResponse>;
+// =============================================================================
+// HISTORY & SESSION LOADING
+// =============================================================================
 
-/** Session data structure updated for turn-based model */
-export interface TurnBasedChatSession {
+/** Represents a session summary object used for display in the history panel. */
+export interface HistorySessionSummary {
+  id: string;
+  sessionId: string;
+  startTime: number;
+  lastActivity: number;
+  title: string;
+  firstMessage?: string;
+  messageCount: number;
+  messages?: TurnMessage[]; // Use the new TurnMessage type
+}
+
+/** ALIAS: This keeps `App.tsx` working without needing to find/replace `ChatSession` everywhere yet. */
+export type ChatSession = HistorySessionSummary;
+
+/** The shape of the API response when fetching the list of chat sessions. */
+export interface HistoryApiResponse {
+  sessions: HistorySessionSummary[];
+}
+
+/** 
+ * The shape of the API response when fetching a full session to load into the UI.
+ */
+export interface FullSessionPayload {
   id: string;
   sessionId: string;
   title: string;
-  startTime: number;
-  turns: TurnMessage[];
-}
-
-/** Convenience aliases for the domain model (non-breaking) */
-export type Session = TurnBasedChatSession;
-export type ProviderResult = ProviderResponse;
-
-/**
- * Minimal UI finite state machine for the chat surface.
- * This runs orthogonally to provider/synthesis details and avoids overloading AppStep.
- */
-export type UiPhase = 'idle' | 'streaming' | 'awaiting_action';
-
-/** Per-provider continuation context (e.g., threadUrl, chatId) kept per session */
-export type ProviderContinuationContexts = Record<string, any>;
-
-/**
- * A "Round" represents a single prompt→responses trip within a session.
- * It pairs the user turn with the corresponding AI turn, and can carry synthesis and continuation context.
- */
-export interface Round {
-  id: string;
-  sessionId: string;
-  user: UserTurn;
-  ai?: AiTurn;
-  synthesis?: ProviderResponse;
-  providerContexts?: ProviderContinuationContexts;
   createdAt: number;
+  lastActivity: number;
+  turns: TurnMessage[]; // Backend should send data in the new, correct TurnMessage format.
+  providerContexts: Record<string, any>;
 }
 
+/** ALIAS: This keeps `App.tsx` working without needing to find/replace `BackendFullSession` yet. */
+export type BackendFullSession = FullSessionPayload;
+
+/** DEPRECATED: Old message format from legacy port communication. Replaced by contract.ts types. */
+/** @deprecated Replaced by the PortMessage types in `shared/contract.ts` */
+export interface BackendMessage {
+  type: string;
+  sessionId: string;
+  [key: string]: any;
+}
+
+
 // =============================================================================
-// COMPOSER MODE TYPE DEFINITIONS
+// COMPOSER MODE TYPE DEFINITIONS (Restored from Original)
 // =============================================================================
 
-/** Slate node descendant type for editor content */
-// Use Slate's Descendant type, augmented by our declaration-merging in ui/types/slate.d.ts
-import type { Descendant } from 'slate';
 export type SlateDescendant = Descendant;
 
-/** Content source mapping for provenance tracking */
 export interface ContentSourceMap {
   [nodeId: string]: {
     providerId: string;
@@ -272,7 +176,6 @@ export interface ContentSourceMap {
   };
 }
 
-/** Refinement entry for history tracking */
 export interface RefinementEntry {
   id: string;
   timestamp: number;
@@ -286,7 +189,6 @@ export interface RefinementEntry {
   error?: string;
 }
 
-/** Export entry for tracking exports */
 export interface ExportEntry {
   id: string;
   timestamp: number;
@@ -295,26 +197,18 @@ export interface ExportEntry {
   metadata?: Record<string, any>;
 }
 
-/** Composer state stored in AiTurn */
 export interface ComposerState {
-  // Current canvas content (Slate descendants)
   canvasContent: SlateDescendant[];
-  // Current granularity for parsing sources
   granularity: 'full' | 'paragraph' | 'sentence';
-  // Provenance/source mapping keyed by nodeId
   sourceMap: ContentSourceMap;
-  // Save/dirty tracking
   isDirty: boolean;
   createdAt: number;
   lastModified: number;
-  // Optional last saved timestamp for persistence UI
   lastSaved?: number;
-  // Histories
   refinementHistory: RefinementEntry[];
   exportHistory: ExportEntry[];
 }
 
-/** Granular unit for drag and drop */
 export interface GranularUnit {
   id: string;
   text: string;
@@ -324,7 +218,6 @@ export interface GranularUnit {
   index: number;
 }
 
-/** Composable source from AI outputs */
 export interface ComposableSource {
   id: string;
   type: 'batch' | 'synthesis' | 'ensemble' | 'hidden';
@@ -334,14 +227,6 @@ export interface ComposableSource {
   metadata?: Record<string, any>;
 }
 
-/** View mode for navigation */
-export enum ViewMode {
-  CHAT = 'chat',
-  COMPOSER = 'composer',
-  HISTORY = 'history'
-}
-
-/** Composer context value */
 export interface ComposerContextValue {
   activeAiTurn: AiTurn | null;
   canvasContent: SlateDescendant[];
@@ -351,106 +236,3 @@ export interface ComposerContextValue {
   persistComposerState: () => void;
   setGranularity: (level: 'full' | 'paragraph' | 'sentence') => void;
 }
-
-/** Refinement options for API calls */
-export interface RefinementOptions {
-  model?: string;
-  temperature?: number;
-  maxTokens?: number;
-  type?: 'grammar' | 'style' | 'tone' | 'structure' | 'custom';
-  instructions?: string;
-}
-
-/** Refinement response from API */
-export interface RefinementResponse {
-  text: string;
-  model: string;
-  tokensUsed?: number;
-  changes?: Array<{
-    type: string;
-    description: string;
-    location: { start: number; end: number };
-  }>;
-}
-
-// =============================================================================
-// Ensemble UI State (authoritative; maintained in App.tsx)
-// =============================================================================
-
-// Hidden/round-tracking types removed with hidden flows
-
-/** Migration utility - converts legacy Message to TurnMessage */
-export const convertLegacyMessageToTurn = (message: Message): TurnMessage => {
-  const ts = message.timestamp || Date.now();
-
-  if (message.type === 'user') {
-    const userTurn: UserTurn = {
-      type: 'user',
-      id: message.id,
-      text: message.text || '',
-      createdAt: ts,
-      sessionId: message.sessionId || null,
-    };
-    return userTurn;
-  }
-
-  // AI/legacy message -> AiTurn
-  const providerResponses: Record<string, ProviderResponse> = {};
-
-  // Convert llmData (if present) into providerResponses keyed by providerId
-  if (Array.isArray(message.llmData)) {
-    for (const d of message.llmData) {
-      const pid = String(d.providerId || 'unknown').toLowerCase();
-      providerResponses[pid] = {
-        providerId: pid,
-        text: (d.fullOutput && String(d.fullOutput)) || (d.firstSentenceSummary && String(d.firstSentenceSummary)) || '',
-        status: (d.isStreamingOutput || d.isStreamingSummary) ? 'streaming' : 'completed',
-        meta: {
-          firstSentenceSummary: d.firstSentenceSummary,
-          isStreamingSummary: d.isStreamingSummary,
-          isStreamingOutput: d.isStreamingOutput,
-          isExpanded: d.isExpanded,
-        },
-        createdAt: ts,
-        updatedAt: ts,
-      };
-    }
-  }
-
-  // If llmData was not present but overallSummary exists, create a default provider entry
-  if (Object.keys(providerResponses).length === 0) {
-    // try to infer a provider key from message (best-effort)
-    const inferredKey = 'synthesis';
-    providerResponses[inferredKey] = {
-      providerId: inferredKey,
-      text: message.text || message.overallSummary || '',
-      status: 'completed',
-      meta: {},
-      createdAt: ts,
-      updatedAt: ts,
-    };
-  }
-
-  const synthesisResponse: ProviderResponse | undefined = message.overallSummary
-    ? {
-        text: message.overallSummary,
-        status: 'completed',
-        createdAt: ts,
-        updatedAt: ts,
-      }
-    : undefined;
-
-  const aiTurn: AiTurn = {
-    type: 'ai',
-    id: message.id,
-    createdAt: message.timestamp || Date.now(),
-    sessionId: message.sessionId || null,
-    batchResponses: providerResponses,
-    synthesisResponses: synthesisResponse ? { synthesis: [synthesisResponse] } : {},
-    ensembleResponses: {},
-    providerResponses: providerResponses,
-    synthesisResponse: synthesisResponse,
-  };
-
-  return aiTurn;
-};

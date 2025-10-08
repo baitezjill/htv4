@@ -1,18 +1,21 @@
+// ui/utils/composerUtils.ts (Refactored for the new types)
+
 import { v4 as uuid } from 'uuid';
-import type { AiTurn, ComposableSource, GranularUnit, ProviderResponse } from '../types';
+import type { AiTurn, ComposableSource, GranularUnit, ProviderResponse, SlateDescendant } from '../types';
 
 /**
- * Extract all available AI responses from an AiTurn for composition
+ * Extracts all valid AI responses from an AiTurn into a flat list of sources
+ * for use in the Composer Mode source panel.
  */
 export const extractComposableContent = (aiTurn: AiTurn): ComposableSource[] => {
   const sources: ComposableSource[] = [];
-  
-  // Extract batch responses (GPT, Claude, Gemini individual outputs)
+
+  // 1. Extract batch responses
   if (aiTurn.batchResponses) {
-    Object.entries(aiTurn.batchResponses).forEach(([providerId, response]) => {
-      if (response.text?.trim()) {
+    for (const [providerId, response] of Object.entries(aiTurn.batchResponses)) {
+      if (response.text?.trim() && response.status === 'completed') {
         sources.push({
-          id: `batch-${providerId}-${Date.now()}`,
+          id: `batch-${providerId}-${uuid()}`,
           type: 'batch',
           providerId,
           content: response.text,
@@ -20,77 +23,51 @@ export const extractComposableContent = (aiTurn: AiTurn): ComposableSource[] => 
           metadata: response.meta
         });
       }
-    });
+    }
   }
-  
-  // Extract synthesis responses (multi-take arrays per provider)
+
+  // 2. Extract synthesis responses (handles multiple "takes" per provider)
   if (aiTurn.synthesisResponses) {
-    Object.entries(aiTurn.synthesisResponses).forEach(([providerId, responses]) => {
-      const list = Array.isArray(responses) ? responses : [responses as unknown as ProviderResponse];
-      list.forEach((response, idx) => {
-        if (response?.text?.trim()) {
+    for (const [providerId, takes] of Object.entries(aiTurn.synthesisResponses)) {
+      for (const [index, take] of takes.entries()) {
+        if (take.text?.trim() && take.status === 'completed') {
           sources.push({
-            id: `synthesis-${providerId}-${idx}-${Date.now()}`,
+            id: `synthesis-${providerId}-${index}-${uuid()}`,
             type: 'synthesis',
             providerId,
-            content: response.text,
-            status: response.status,
-            metadata: response.meta
+            content: take.text,
+            status: take.status,
+            metadata: take.meta
           });
         }
-      });
-    });
+      }
+    }
   }
   
-  // Legacy synthesis response support
-  if (aiTurn.synthesisResponse && aiTurn.synthesisResponse.text?.trim()) {
-    sources.push({
-      id: `synthesis-legacy-${Date.now()}`,
-      type: 'synthesis',
-      providerId: 'synthesis',
-      content: aiTurn.synthesisResponse.text,
-      status: aiTurn.synthesisResponse.status,
-      metadata: aiTurn.synthesisResponse.meta
-    });
-  }
-  
-  // Extract ensemble responses (multi-take arrays per provider)
+  // 3. Extract ensemble responses (handles multiple "takes" per provider)
   if (aiTurn.ensembleResponses) {
-    Object.entries(aiTurn.ensembleResponses).forEach(([providerId, responses]) => {
-      const list = Array.isArray(responses) ? responses : [responses as unknown as ProviderResponse];
-      list.forEach((response, idx) => {
-        if (response?.text?.trim()) {
+    for (const [providerId, takes] of Object.entries(aiTurn.ensembleResponses)) {
+      for (const [index, take] of takes.entries()) {
+        if (take.text?.trim() && take.status === 'completed') {
           sources.push({
-            id: `ensemble-${providerId}-${idx}-${Date.now()}`,
+            id: `ensemble-${providerId}-${index}-${uuid()}`,
             type: 'ensemble',
             providerId,
-            content: response.text,
-            status: response.status,
-            metadata: response.meta
+            content: take.text,
+            status: take.status,
+            metadata: take.meta
           });
         }
-      });
-    });
+      }
+    }
   }
-  
-  // Legacy ensemble response support
-  if (aiTurn.ensembleResponse && aiTurn.ensembleResponse.text?.trim()) {
-    sources.push({
-      id: `ensemble-legacy-${Date.now()}`,
-      type: 'ensemble',
-      providerId: 'ensemble',
-      content: aiTurn.ensembleResponse.text,
-      status: aiTurn.ensembleResponse.status,
-      metadata: aiTurn.ensembleResponse.meta
-    });
-  }
-  
-  // Extract hidden batch outputs (for synthesis-first workflow)
+
+  // 4. Extract hidden batch outputs (for synthesis-first workflows)
   if (aiTurn.hiddenBatchOutputs) {
-    Object.entries(aiTurn.hiddenBatchOutputs).forEach(([providerId, response]) => {
-      if (response.text?.trim()) {
+    for (const [providerId, response] of Object.entries(aiTurn.hiddenBatchOutputs)) {
+      if (response.text?.trim() && response.status === 'completed') {
         sources.push({
-          id: `hidden-${providerId}-${Date.now()}`,
+          id: `hidden-${providerId}-${uuid()}`,
           type: 'hidden',
           providerId,
           content: response.text,
@@ -98,30 +75,15 @@ export const extractComposableContent = (aiTurn: AiTurn): ComposableSource[] => 
           metadata: response.meta
         });
       }
-    });
+    }
   }
-  
-  // Legacy providerResponses support (if not already covered)
-  if (aiTurn.providerResponses && !aiTurn.batchResponses) {
-    Object.entries(aiTurn.providerResponses).forEach(([providerId, response]) => {
-      if (response.text?.trim() && !sources.find(s => s.providerId === providerId)) {
-        sources.push({
-          id: `provider-${providerId}-${Date.now()}`,
-          type: 'batch',
-          providerId,
-          content: response.text,
-          status: response.status,
-          metadata: response.meta
-        });
-      }
-    });
-  }
-  
-  return sources;
+
+  return sources; // This return statement fixes the "must return a value" error.
 };
 
 /**
- * Parse content into granular units based on granularity level
+ * Parses content into granular units based on granularity level.
+ * (Your superior implementation is kept here).
  */
 export const parseIntoGranularUnits = (
   content: string,
@@ -129,7 +91,7 @@ export const parseIntoGranularUnits = (
   sourceId: string,
   providerId: string
 ): GranularUnit[] => {
-  if (!content || !content.trim()) {
+  if (!content?.trim()) {
     return [];
   }
   
@@ -181,15 +143,18 @@ export const parseIntoGranularUnits = (
 };
 
 /**
- * Serialize Slate editor content to plain text
+ * Serializes Slate editor content to a plain text string.
+ * Added strong typing to the `nodes` parameter.
  */
-export const serializeToPlainText = (nodes: any[]): string => {
+export const serializeToPlainText = (nodes: SlateDescendant[]): string => {
   return nodes
     .map(node => {
-      if (node.text !== undefined) {
+      // Check if it's a Text node (which has a 'text' property)
+      if ('text' in node) {
         return node.text;
       }
-      if (node.children) {
+      // Otherwise, it's an Element node, so recurse through its children
+      if ('children' in node) {
         return serializeToPlainText(node.children);
       }
       return '';
@@ -198,11 +163,21 @@ export const serializeToPlainText = (nodes: any[]): string => {
 };
 
 /**
- * Check if an AiTurn has composable content
+ * Checks if an AiTurn has any valid, completed content to be used in the composer.
  */
 export const hasComposableContent = (aiTurn: AiTurn): boolean => {
-  const sources = extractComposableContent(aiTurn);
-  return sources.length > 0;
+  // This helper function now correctly checks the structure of the response maps.
+  const hasCompleted = (responses?: Record<string, ProviderResponse> | Record<string, ProviderResponse[]>) => {
+    if (!responses) return false;
+    return Object.values(responses)
+      .flat() // .flat() works on both single objects and arrays of arrays
+      .some(r => r.status === 'completed' && r.text?.trim());
+  };
+
+  return hasCompleted(aiTurn.batchResponses) || 
+         hasCompleted(aiTurn.synthesisResponses) ||
+         hasCompleted(aiTurn.ensembleResponses) ||
+         hasCompleted(aiTurn.hiddenBatchOutputs);
 };
 
 /**
@@ -214,20 +189,13 @@ export const formatForExport = (
 ): string => {
   switch (format) {
     case 'markdown':
-      return content; // Already in markdown-friendly format
-      
+      return content;
     case 'html':
-      return content
-        .split('\n\n')
-        .map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`)
-        .join('\n');
-      
+      return content.split('\n\n').map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('\n');
     case 'text':
       return content;
-      
     case 'json':
       return JSON.stringify({ content, timestamp: Date.now() }, null, 2);
-      
     default:
       return content;
   }
@@ -237,18 +205,15 @@ export const formatForExport = (
  * Calculate word count for content
  */
 export const calculateWordCount = (content: string): number => {
-  return content
-    .trim()
-    .split(/\s+/)
-    .filter(word => word.length > 0)
-    .length;
+  if (!content) return 0;
+  return content.trim().split(/\s+/).filter(Boolean).length;
 };
 
 /**
  * Estimate reading time in minutes
  */
-export const estimateReadingTime = (content: string): number => {
+export const estimateReadingTime = (content: string, wordsPerMinute = 200): number => {
   const wordCount = calculateWordCount(content);
-  const wordsPerMinute = 200;
+  if (wordCount === 0) return 0;
   return Math.ceil(wordCount / wordsPerMinute);
 };

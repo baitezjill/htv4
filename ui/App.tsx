@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { VariableSizeList as List, ListChildComponentProps } from 'react-window';
 import React from 'react';
-import { TurnMessage, UserTurn, AiTurn, ProviderResponse, AppStep, ChatSession, BackendMessage, LLMProvider, isUserTurn, isAiTurn, UiPhase, BackendFullSession, ViewMode } from './types';
+import { TurnMessage, UserTurn, AiTurn, ProviderResponse, AppStep, HistorySessionSummary, BackendMessage, LLMProvider, isUserTurn, isAiTurn, UiPhase, FullSessionPayload, ViewMode, ProviderResponseStatus } from './types';
 import { LLM_PROVIDERS_CONFIG, EXAMPLE_PROMPT } from './constants';
 import { computeThinkFlag } from '../src/think/lib/think/computeThinkFlag.js';
 import UserTurnBlock from './components/UserTurnBlock';
@@ -16,47 +16,10 @@ import { useDelegatedScroll } from './hooks/useDelegatedScroll';
 import Banner from './components/Banner';
 import { StreamingBuffer } from './utils/streamingBuffer';
 import ComposerMode from './components/composer/ComposerMode';
+import { WorkflowBuilder } from './services/workflow-builder';
+import { ProviderKey } from '../shared/contract';
 
-// Hoisted helper: Build the Ensembler prompt using provided fixed template from spec
-function buildEnsemblerPrompt(userPrompt: string, modelOutputs: Record<string, string>): string {
-  const modelOutputsBlock = Object.entries(modelOutputs)
-    .filter(([_, text]) => text && text.trim())
-    .map(([providerId, text]) => `=== ${providerId.toUpperCase()} ===\n${text}`)
-    .join('\n\n');
-
-  const tpl = `You are not a synthesizer. You are a mirror that reveals what others cannot see.
-Task: Present ALL insights from the models below in their most useful form for decision-making on "(user's Prompt)".
-Critical instruction: Do NOT synthesize into a single answer. Instead, reason internally via this structure—then output ONLY as seamless, narrative prose that implicitly embeds it all:
-Map the landscape — Group similar ideas, preserving tensions and contradictions.
-Surface the invisible — Highlight consensus (2+ models), unique sightings (one model) as natural flow.
-Frame the choices — present alternatives as "If you prioritize X, this path fits because Y."
-Flag the unknowns — Note disagreements/uncertainties as subtle cautions.
-Internal format for reasoning (NEVER output directly):
-What Everyone Sees (consensus)
-Point 1
-Point 2
-The Tensions (disagreements)
-Option A: [suggestion X] implies...
-Option B: [suggestion Y] posits...
-The Unique Insights
-[suggestion]: Overlooked angle...
-The Choice Framework
-If priority [goal 1]: lean toward [option]
-If priority [goal 2]: lean toward [option]
-Confidence Check
-- High confidence: [what's solid]
-- Check this: [what needs verification]
-- Unknown: [what's missing]
-
-
-finally output your response as a narrative explaining everything implicitly to the user, like a natural response to the users prompt fluid, insightful, redacting model names/extraneous details. Build feedback as emergent wisdom—evoke clarity, agency, and subtle awe. Weave your final narrative as representation of a cohesive response of the collective thought  to the users prompt:
-
-User Prompt: ${userPrompt}
-
-Model outputs to analyze:
-${modelOutputsBlock}`;
-  return tpl;
-}
+// buildEnsemblerPrompt has been moved to the backend (workflow-engine.js)
 
 const App = () => {
   // Single source of truth: all messages in one array
@@ -69,7 +32,7 @@ const App = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isHistoryPanelOpen, setIsHistoryPanelOpen] = useState(false);
-  const [historySessions, setHistorySessions] = useState<ChatSession[]>([]);
+  const [historySessions, setHistorySessions] = useState<HistorySessionSummary[]>([]);
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
   const [currentAppStep, setCurrentAppStep] = useState<AppStep>('initial');
@@ -107,8 +70,6 @@ const App = () => {
 
   // Refs
   const activeAiTurnIdRef = useRef<string | null>(null);
-  const lastAttachedPortRef = useRef<chrome.runtime.Port | null>(null);
-  const handlePortMessageRef = useRef<((message: any) => void) | null>(null);
   const scrollSaveTimeoutRef = useRef<number | undefined>(undefined);
   const didLoadTurnsRef = useRef(false);
   const appStartTimeRef = useRef<number>(Date.now());
@@ -130,11 +91,6 @@ const App = () => {
   }, [currentSessionId]);
 
   // Removed ambiguous helper getAllProviderResponses to prevent synthesis/ensemble from shadowing batch.
-
-  // Helper: get pristine batch provider responses only (for re-runs)
-  const getBatchProviderResponses = (aiTurn: AiTurn): Record<string, ProviderResponse> => {
-    return { ...(aiTurn.batchResponses || {}) };
-  };
 
   // ============================================================================
   // Graceful shutdown handler
@@ -239,7 +195,7 @@ const App = () => {
           // History is now managed by backend API
           api.getHistoryList()
             .then((response) => {
-              const formattedSessions: ChatSession[] = response.sessions.map((session: ChatSession) => ({
+              const formattedSessions: HistorySessionSummary[] = response.sessions.map((session: HistorySessionSummary) => ({
                 id: session.sessionId,
                 sessionId: session.sessionId,
                 title: session.title || 'Untitled',
@@ -262,46 +218,27 @@ const App = () => {
   // Targeted update by AI turn id (supports mid-list synthesis streaming)
   const updateAiTurnById = useCallback((aiTurnId: string, updater: (aiTurn: AiTurn) => AiTurn) => {
     setMessages(prev => {
-      const idx = prev.findIndex(t => t.type === 'ai' && (t as AiTurn).id === aiTurnId);
+      const idx = prev.findIndex(t => t.id === aiTurnId);
       if (idx === -1) return prev;
-
+      
       const updated = [...prev];
       const updatedAiTurn = updater(updated[idx] as AiTurn);
       updated[idx] = updatedAiTurn;
 
-      // Explicitly check completion across known containers without merging helpers
-      const latestFromArrayMap = (container?: Record<string, ProviderResponse[] | ProviderResponse>): Record<string, ProviderResponse> => {
-        const out: Record<string, ProviderResponse> = {};
-        if (!container) return out;
-        Object.entries(container as Record<string, any>).forEach(([pid, resp]) => {
-          if (Array.isArray(resp)) {
-            const last = resp[resp.length - 1];
-            if (last) out[pid] = last;
-          } else if (resp && typeof resp === 'object') {
-            out[pid] = resp as ProviderResponse;
-          }
-        });
-        return out;
-      };
+      // Completion check now looks at all possible response arrays
+      const allBatch = Object.values(updatedAiTurn.batchResponses || {});
+      const allSynth = Object.values(updatedAiTurn.synthesisResponses || {}).flat();
+      const allEnsemble = Object.values(updatedAiTurn.ensembleResponses || {}).flat();
+      const allResponses = [...allBatch, ...allSynth, ...allEnsemble];
 
-      const allResponses: Record<string, ProviderResponse> = {
-        ...(updatedAiTurn.batchResponses || {}),
-        ...latestFromArrayMap(updatedAiTurn.synthesisResponses),
-        ...latestFromArrayMap(updatedAiTurn.ensembleResponses),
-        ...(updatedAiTurn.providerResponses || {}) // legacy
-      };
-      const allComplete = Object.values(allResponses).every(r => r.status === 'completed' || r.status === 'error');
+      const allComplete = allResponses.length > 0 && allResponses.every(r => r.status === 'completed' || r.status === 'error');
 
-      if (allComplete) {
+      if (allComplete && activeAiTurnIdRef.current === aiTurnId) {
         setIsLoading(false);
         setUiPhase('awaiting_action');
-        const isEnsemble = updatedAiTurn.isEnsembleAnswer;
-        const isSynthesis = updatedAiTurn.isSynthesisAnswer;
-        setCurrentAppStep(isEnsemble || isSynthesis ? 'synthesisDone' : 'awaitingSynthesis');
         setIsContinuationMode(true);
         activeAiTurnIdRef.current = null;
       }
-
       return updated;
     });
   }, []);
@@ -465,11 +402,9 @@ const App = () => {
     const roundInfo = findRoundForUserTurn(userTurnId);
     if (!roundInfo || !roundInfo.user || !roundInfo.ai) return;
     
-    const { ai } = roundInfo; // The AiTurn to update
-
+    const { ai } = roundInfo;
     const results: Record<string, string> = {};
-    // Use only pristine batch outputs for synthesis inputs
-    Object.entries(getBatchProviderResponses(ai)).forEach(([pid, resp]) => {
+    Object.entries(ai.batchResponses || {}).forEach(([pid, resp]) => {
       if (resp.status === 'completed' && resp.text?.trim()) results[pid] = resp.text!;
     });
     if (Object.keys(results).length < 2) return;
@@ -479,46 +414,42 @@ const App = () => {
       .map(([pid]) => pid);
     if (selected.length === 0) return;
 
-    // Initialize a new take per selected provider (append to arrays)
     updateAiTurnById(ai.id, (prevAiTurn) => {
       const prev = prevAiTurn.synthesisResponses || {};
-      const next: Record<string, ProviderResponse[]> = { ...prev } as Record<string, ProviderResponse[]>;
+      const next: Record<string, ProviderResponse[]> = { ...prev };
       selected.forEach((pid) => {
-        const arr = Array.isArray(next[pid]) ? next[pid]! : (next[pid] ? [next[pid] as unknown as ProviderResponse] : []);
+        const arr = Array.isArray(next[pid]) ? next[pid]! : [];
         arr.push({ providerId: pid, text: '', status: 'pending', createdAt: Date.now() });
         next[pid] = arr;
       });
       return { ...prevAiTurn, synthesisResponses: next };
     });
 
-    activeAiTurnIdRef.current = ai.id; // Stream into the correct, existing turn
+    activeAiTurnIdRef.current = ai.id;
     setIsLoading(true);
     setUiPhase('streaming');
     setCurrentAppStep('synthesis');
     isSynthRunningRef.current = true;
 
-    const originalPrompt = roundInfo.user.text || '';
-    const idempotencyToken = `${currentSessionId}:${userTurnId}:synth:${selected.sort().join('+')}`;
-
     try {
-      if (typeof api.ensurePort === 'function') {
-        const port = await api.ensurePort({ sessionId: currentSessionId });
-        if (port && handlePortMessageRef.current && lastAttachedPortRef.current !== port) {
-          port.onMessage.addListener(handlePortMessageRef.current);
-          lastAttachedPortRef.current = port;
-        }
-      }
-      if (selected.length === 1) {
-        setLastSynthesisModel(selected[0]);
-      }
-      await api.executeSynthesis(
-        currentSessionId,
-        originalPrompt,
-        results,
-        (selected.length === 1 ? (selected[0] as ValidProvider) : (selected as ValidProvider[])),
-        uiTabId,
-        { idempotencyToken, useThinking: !!thinkSynthByRound[userTurnId] && selected.includes('chatgpt') }
-      );
+      const builder = new WorkflowBuilder({ 
+        sessionId: currentSessionId, 
+        targetUserTurnId: userTurnId, 
+        uiTabId 
+      });
+      selected.forEach(provider => {
+    builder.addSynthesisRerun(
+      provider as ProviderKey,
+      userTurnId, // This is the historicalTurnId the backend will resolve
+      roundInfo.user.text || '',
+      { useThinking: !!thinkSynthByRound[userTurnId] && provider === 'chatgpt' }
+    );
+  });
+
+  if (selected.length === 1) {
+    setLastSynthesisModel(selected[0]);
+  }
+  await api.executeWorkflow(builder.build());
     } catch (err) {
       console.error('Synthesis run failed:', err);
       setIsLoading(false);
@@ -539,10 +470,8 @@ const App = () => {
     if (!roundInfo || !roundInfo.user || !roundInfo.ai) return;
 
     const { user: roundUser, ai: roundAi } = roundInfo;
-
     const modelOutputs: Record<string, string> = {};
-    // Use only pristine batch outputs for ensemble inputs
-    Object.entries(getBatchProviderResponses(roundAi)).forEach(([pid, resp]) => {
+    Object.entries(roundAi.batchResponses || {}).forEach(([pid, resp]) => {
       if (resp.status === 'completed' && resp.text?.trim()) modelOutputs[pid] = resp.text!;
     });
     if (Object.keys(modelOutputs).length < 2) return;
@@ -550,49 +479,43 @@ const App = () => {
     const ensemblerProvider = ensembleSelectionByRound[userTurnId];
     if (!ensemblerProvider) return;
 
-    const ensemblerPrompt = buildEnsemblerPrompt(roundUser.text || '', modelOutputs);
-
     setIsLoading(true);
     setUiPhase('streaming');
     setCurrentAppStep('synthesis');
 
-    // Initialize a new ensemble take (append to array for the selected provider)
     updateAiTurnById(roundAi.id, (prevAiTurn) => {
       const prev = prevAiTurn.ensembleResponses || {};
-      const next: Record<string, ProviderResponse[]> = { ...prev } as Record<string, ProviderResponse[]>;
+      const next: Record<string, ProviderResponse[]> = { ...prev };
       const pid = ensemblerProvider;
-      const arr = Array.isArray(next[pid]) ? next[pid]! : (next[pid] ? [next[pid] as unknown as ProviderResponse] : []);
+      const arr = Array.isArray(next[pid]) ? next[pid]! : [];
       arr.push({ providerId: pid, text: '', status: 'pending', createdAt: Date.now() });
       next[pid] = arr;
       return { ...prevAiTurn, ensembleResponses: next };
     });
     
-    activeAiTurnIdRef.current = roundAi.id; // Stream into the correct, existing turn
+    activeAiTurnIdRef.current = roundAi.id;
 
     try {
-      const handlePortMessage = createPortMessageHandler();
-      handlePortMessageRef.current = handlePortMessage;
+      const builder = new WorkflowBuilder({ 
+        sessionId: currentSessionId, 
+        targetUserTurnId: userTurnId, 
+        uiTabId 
+      });
+       builder.addEnsembleRerun(
+    ensemblerProvider as ProviderKey,
+    userTurnId, // This is the historicalTurnId
+    roundUser.text || '',
+    { useThinking: (ensemblerProvider === 'chatgpt') ? !!thinkEnsembleByRound[userTurnId] : false }
+  );
 
-      const providerConfig = LLM_PROVIDERS_CONFIG.find(p => p.id === ensemblerProvider);
-      if (!providerConfig) throw new Error("Ensembler provider not found");
-
-      const { port } = api.executeBatchPrompt(
-        ensemblerPrompt,
-        [providerConfig],
-        isVisibleMode,
-        uiTabId,
-        handlePortMessage,
-        currentSessionId,
-        (ensemblerProvider === 'chatgpt') ? !!thinkEnsembleByRound[userTurnId] : undefined
-      );
-      lastAttachedPortRef.current = port;
+  await api.executeWorkflow(builder.build());
     } catch (err) {
       console.error('Ensemble run failed:', err);
       setIsLoading(false);
       setUiPhase('awaiting_action');
       activeAiTurnIdRef.current = null;
     }
-  }, [currentSessionId, ensembleSelectionByRound, uiTabId, isVisibleMode, findRoundForUserTurn, thinkEnsembleByRound, updateAiTurnById]);
+  }, [currentSessionId, ensembleSelectionByRound, uiTabId, findRoundForUserTurn, thinkEnsembleByRound, updateAiTurnById]);
 
   // Utility: Estimate item size for virtual list (fallback before actual measure)
   const itemSizeEstimator = useCallback((index: number): number => {
@@ -635,7 +558,8 @@ const App = () => {
     // Special handling for synthesis answers (larger height)
     if (aiTurn.isSynthesisAnswer) {
       const baseHeight = 150; // Increased base height for special answers
-      const content = aiTurn.synthesisResponse?.text || Object.values(aiTurn.providerResponses || {})[0]?.text || '';
+      const synthesisText = Object.values(aiTurn.synthesisResponses || {}).flat()[0]?.text || '';
+      const content = synthesisText || Object.values(aiTurn.providerResponses || {})[0]?.text || '';
       const lineHeight = 21;
       const charsPerLine = 100;
 
@@ -775,28 +699,140 @@ const App = () => {
     }
   }, []);
 
-  // Runtime message listener for workflow completion
-  useEffect(() => {
-    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
-      const runtimeListener = (message: any) => {
-        if (!message) return;
-        console.log('[HTOS] Received message:', message); // Debug log
-        const messageType = (message.type || '').toString().toLowerCase();
-        
-        if (messageType === 'workflow_complete' || 
-            (messageType.includes('complete') && messageType.includes('workflow'))) {
-          console.log('[HTOS] Handling workflow complete:', message);
+ // ============================================================================
+  // NEW: Unified Port Message Handler
+  // This replaces the entire old `createPortMessageHandler`.
+  // ============================================================================
+  const createPortMessageHandler = useCallback(() => {
+    if (!streamingBufferRef.current) {
+      streamingBufferRef.current = new StreamingBuffer(
+        (providerId, textUpdate, status, responseType: 'batch' | 'synthesis' | 'ensemble') => {
+          const activeId = activeAiTurnIdRef.current;
+          if (!providerId || !activeId) return;
+
+          updateAiTurnById(activeId, aiTurn => {
+            if (aiTurn.id !== activeId) return aiTurn;
+
+            const isCompletion = status === 'completed' || status === 'error';
+            
+            const getUpdatedTake = (existingTake: ProviderResponse | undefined): ProviderResponse => {
+                const base = (existingTake && existingTake.status !== 'completed' && existingTake.status !== 'error')
+                    ? existingTake
+                    : { providerId, text: '', status: 'pending', createdAt: Date.now() } as ProviderResponse;
+                
+                return {
+                    ...base,
+                    text: isCompletion ? textUpdate : (base.text + textUpdate),
+                    status: status as ProviderResponseStatus,
+                    updatedAt: Date.now()
+                };
+            };
+
+            if (responseType === 'synthesis') {
+                const map = { ...(aiTurn.synthesisResponses || {}) };
+                const takes = map[providerId] || [];
+                const updatedTake = getUpdatedTake(takes[takes.length - 1]);
+                map[providerId] = [...takes.slice(0, -1), updatedTake];
+                return { ...aiTurn, synthesisResponses: map };
+            } else if (responseType === 'ensemble') {
+                const map = { ...(aiTurn.ensembleResponses || {}) };
+                const takes = map[providerId] || [];
+                const updatedTake = getUpdatedTake(takes[takes.length - 1]);
+                map[providerId] = [...takes.slice(0, -1), updatedTake];
+                return { ...aiTurn, ensembleResponses: map };
+            } else { // 'batch'
+                const map = { ...(aiTurn.batchResponses || {}) };
+                const existing = map[providerId] || { providerId, text: '', status: 'pending', createdAt: Date.now() } as ProviderResponse;
+                map[providerId] = {
+                    ...existing,
+                    text: isCompletion ? textUpdate : (existing.text + textUpdate),
+                    status: status as ProviderResponseStatus,
+                    updatedAt: Date.now()
+                };
+                return { ...aiTurn, batchResponses: map };
+            }
+          });
+        }
+      );
+    }
+
+    return (message: any) => {
+      if (!message || !message.type) return;
+
+      switch (message.type) {
+        case 'SESSION_STARTED': {
+          setCurrentSessionId(message.sessionId);
+          setMessages(prev => prev.map(m => ({ ...m, sessionId: message.sessionId })));
+          setPendingUserTurns(prevMap => {
+            const newMap = new Map(prevMap);
+            newMap.forEach((userTurn, aiId) => {
+              if (!userTurn.sessionId) newMap.set(aiId, { ...userTurn, sessionId: message.sessionId });
+            });
+            return newMap;
+          });
+          break;
+        }
+
+        case 'PARTIAL_RESULT': {
+          const { stepId, providerId, chunk } = message;
+          if (!providerId || !chunk?.text) return;
+
+          let responseType: 'batch' | 'synthesis' | 'ensemble' = 'batch';
+          if (stepId.startsWith('synthesis')) responseType = 'synthesis';
+          else if (stepId.startsWith('ensemble')) responseType = 'ensemble';
+
+          streamingBufferRef.current?.addDelta(providerId, chunk.text, 'streaming', responseType);
+          
+          if (chunk.meta) {
+            setProviderContexts(prev => ({ ...prev, [providerId]: { ...(prev[providerId] || {}), ...chunk.meta } }));
+          }
+          break;
+        }
+
+        case 'WORKFLOW_STEP_UPDATE': {
+          const { stepId, status, result, error } = message;
+          if (status === 'completed' && result) {
+            // A step can complete with a single result or a map of results for each provider
+            const resultsMap = result.results || (result.providerId ? { [result.providerId]: result } : {});
+            
+            Object.entries(resultsMap).forEach(([providerId, data]: [string, any]) => {
+                let responseType: 'batch' | 'synthesis' | 'ensemble' = 'batch';
+                if (stepId.startsWith('synthesis')) responseType = 'synthesis';
+                else if (stepId.startsWith('ensemble')) responseType = 'ensemble';
+
+                streamingBufferRef.current?.setComplete(providerId, data.text || '', 'completed', responseType);
+            });
+          } else if (status === 'failed') {
+            console.error(`[Port Handler] Step failed: ${stepId}`, error);
+            // Future: Mark step as failed in UI
+          }
+          break;
+        }
+
+        case 'WORKFLOW_COMPLETE': {
           setIsLoading(false);
           setUiPhase('awaiting_action');
           setIsContinuationMode(true);
-          setCurrentAppStep('awaitingSynthesis');
+          activeAiTurnIdRef.current = null;
+          streamingBufferRef.current?.flushImmediate(); // Ensure all buffered text is rendered
+          
+          if (activeAiTurnIdRef.current) {
+            setPendingUserTurns(prevMap => {
+              const newMap = new Map(prevMap);
+              newMap.delete(activeAiTurnIdRef.current!);
+              return newMap;
+            });
+          }
+          break;
         }
-      };
-      
-      chrome.runtime.onMessage.addListener(runtimeListener);
-      return () => chrome.runtime.onMessage.removeListener(runtimeListener);
-    }
-  }, []);
+      }
+    };
+  }, [updateAiTurnById]); // Effect to manage port connection
+  useEffect(() => {
+    const handler = createPortMessageHandler();
+    api.setPortMessageHandler(handler);
+    return () => api.setPortMessageHandler(null);
+  }, [createPortMessageHandler]);
 
   // History panel loading from backend
   useEffect(() => {
@@ -809,7 +845,7 @@ const App = () => {
         // Ensure we have a valid response with sessions array
         const sessions = response?.sessions || [];
         
-        const formattedSessions: ChatSession[] = sessions.map(session => ({
+        const formattedSessions: HistorySessionSummary[] = sessions.map(session => ({
           id: session.sessionId,
           sessionId: session.sessionId,
           title: session.title || 'Untitled',
@@ -909,439 +945,109 @@ const App = () => {
     };
   }, [isHistoryPanelOpen]);
 
-  // Port message handler with requestAnimationFrame batching for smooth streaming
-  function createPortMessageHandler() {
-    // Initialize streaming buffer on first call
-    if (!streamingBufferRef.current) {
-      streamingBufferRef.current = new StreamingBuffer((providerId, delta, status, responseType: 'batch' | 'synthesis' | 'ensemble') => {
-        const activeId = activeAiTurnIdRef.current;
-        if (!providerId || !activeId) return;
-        if (!responseType) {
-          console.warn('StreamingBuffer update missing responseType; ignoring update for provider:', providerId);
-          return;
-        }
-        
-        updateAiTurnById(activeId, aiTurn => {
-          if (aiTurn.id !== activeId) return aiTurn;
+  
 
-          let updatedAiTurn = { ...aiTurn };
-          
-          // Route to the correct container based on explicit responseType
-          if (responseType === 'synthesis') {
-            // Store in synthesisResponses (multi-take arrays per provider)
-            const existingMap = aiTurn.synthesisResponses || {};
-            const arr = Array.isArray(existingMap[providerId])
-              ? (existingMap[providerId] as ProviderResponse[])
-              : (existingMap[providerId]
-                  ? [existingMap[providerId] as unknown as ProviderResponse]
-                  : []);
-            const last = arr[arr.length - 1];
-            const base = (last && last.status !== 'completed' && last.status !== 'error')
-              ? last
-              : { providerId, text: '', status: 'pending', createdAt: Date.now() } as ProviderResponse;
-            const newText = status === 'completed' ? delta : (base.text + delta);
-            const updatedItem: ProviderResponse = {
-              ...base,
-              text: newText,
-              status: status as ProviderResponse['status'],
-              updatedAt: Date.now()
-            };
-            const nextArr = (last && base === last)
-              ? [...arr.slice(0, -1), updatedItem]
-              : [...arr, updatedItem];
-            updatedAiTurn.synthesisResponses = {
-              ...existingMap,
-              [providerId]: nextArr
-            };
-            // Legacy field for backward compatibility points to latest item
-            updatedAiTurn.synthesisResponse = updatedItem;
-            updatedAiTurn.isSynthesisAnswer = true;
-          } else if (responseType === 'ensemble') {
-            // Store in ensembleResponses (multi-take arrays per provider)
-            const existingMap = aiTurn.ensembleResponses || {};
-            const arr = Array.isArray(existingMap[providerId])
-              ? (existingMap[providerId] as ProviderResponse[])
-              : (existingMap[providerId]
-                  ? [existingMap[providerId] as unknown as ProviderResponse]
-                  : []);
-            const last = arr[arr.length - 1];
-            const base = (last && last.status !== 'completed' && last.status !== 'error')
-              ? last
-              : { providerId, text: '', status: 'pending', createdAt: Date.now() } as ProviderResponse;
-            const newText = status === 'completed' ? delta : (base.text + delta);
-            const updatedItem: ProviderResponse = {
-              ...base,
-              text: newText,
-              status: status as ProviderResponse['status'],
-              updatedAt: Date.now()
-            };
-            const nextArr = (last && base === last)
-              ? [...arr.slice(0, -1), updatedItem]
-              : [...arr, updatedItem];
-            updatedAiTurn.ensembleResponses = {
-              ...existingMap,
-              [providerId]: nextArr
-            };
-            // Legacy field for backward compatibility points to latest item
-            updatedAiTurn.ensembleResponse = updatedItem;
-            updatedAiTurn.isEnsembleAnswer = true;
-          } else {
-            // Store in batchResponses (GPT, Claude, Gemini)
-            const existingResponses = aiTurn.batchResponses || {};
-            const existing = existingResponses[providerId] || { 
-              providerId, text: '', status: 'pending', createdAt: Date.now() 
-            } as ProviderResponse;
-            const newText = status === 'completed' ? delta : (existing.text + delta);
-            updatedAiTurn.batchResponses = {
-              ...existingResponses,
-              [providerId]: {
-                ...existing,
-                text: newText,
-                status: status as ProviderResponse['status'],
-                updatedAt: Date.now()
-              }
-            };
-            // Keep legacy field for backward compatibility
-            updatedAiTurn.providerResponses = updatedAiTurn.batchResponses;
-          }
-          return updatedAiTurn;
-        });
-      });
-    }
-
-    return (message: any) => {
-      if (!message) return;
-
-      // Session ID binding
-      if ((message.type === 'session' || message.type?.toLowerCase() === 'session') && message.sessionId) {
-        const sid = message.sessionId as string;
-        setCurrentSessionId(sid);
-        if (typeof (api as any).setSessionId === 'function') {
-          (api as any).setSessionId(sid);
-        }
-        
-        // Rebind existing messages to session
-        setMessages(prev => prev.map(m => ({ ...m, sessionId: sid })));
-        setPendingUserTurns(prevMap => {
-          const newMap = new Map(prevMap);
-          newMap.forEach((userTurn, aiId) => {
-            if (userTurn.sessionId === null) {
-              const updatedUser = { ...userTurn, sessionId: sid };
-              newMap.set(aiId, updatedUser);
-            }
-          });
-          return newMap;
-        });
-        return;
-      }
-
-      // Helper to buffer streaming updates or apply complete updates immediately
-      const updateProvider = (
-        providerId: string,
-        text: string | undefined,
-        responseType: 'batch' | 'synthesis' | 'ensemble' | undefined,
-        isPartial?: boolean,
-        status?: string
-      ) => {
-        if (!providerId || !text) return;
-        if (!responseType) {
-          console.warn('Backend message missing responseType; defaulting to batch for provider:', providerId);
-          responseType = 'batch';
-        }
-        
-        const finalStatus = status || (isPartial ? 'streaming' : 'completed');
-        
-        if (isPartial && finalStatus === 'streaming') {
-          // Buffer streaming deltas for batched updates
-          streamingBufferRef.current?.addDelta(providerId, text, finalStatus, responseType);
-        } else {
-          // Immediate update for completion/errors
-          streamingBufferRef.current?.setComplete(providerId, text, finalStatus, responseType);
-        }
-      };
-
-      const rawType = (message.type || message.event || '').toString();
-      const typeLower = rawType.toLowerCase();
-
-      // Handle bulk results (array and object variants)
-      if (Array.isArray(message.results) && message.results.length > 0) {
-        message.results.forEach((r: any) => {
-          const providerId = r.provider || r.providerId || r.providerKey;
-          const text = r.result || r.response || r.resultText;
-          const respType = r.responseType || message.responseType;
-          updateProvider(providerId, text, respType, false, 'completed');
-        });
-        return;
-      } else if (message.results && typeof message.results === 'object') {
-        try {
-          Object.entries(message.results).forEach(([pid, obj]: any) => {
-            const text = obj?.text || obj?.response || obj?.result || '';
-            const respType = obj?.responseType || message.responseType;
-            updateProvider(pid as string, text, respType, false, 'completed');
-          });
-          return;
-        } catch {}
-      }
-
-      // Handle data envelope
-      if (message.data) {
-        const prov = message.data.provider || message.data.providerId;
-        const txt = message.data.result || message.data.text || message.data.response;
-        const partial = !!message.data.isPartial || !!message.data.partial;
-        const respType = message.data.responseType || message.responseType;
-        if (prov) {
-          updateProvider(prov, txt, respType, partial, message.data.status);
-          return;
-        }
-      }
-
-      // Provider-level messages
-      if (typeLower.includes('provider') || typeLower.includes('workflow_step') || message.providerId || message.provider) {
-        const providerId = message.providerId || message.provider || message.providerKey;
-        
-        // Skip system messages
-        if (providerId === 'system') {
-          console.debug('[System Message]', message);
-          return;
-        }
-        const text = message.text || message.chunk || message.partialText || message.result;
-        const isPartial = !!message.isPartial || !!message.partial || typeLower.includes('partial');
-        const status = message.status || (typeLower.includes('complete') ? 'completed' : undefined);
-        const respType = message.responseType as ('batch' | 'synthesis' | 'ensemble' | undefined);
-        
-        updateProvider(providerId, text, respType, isPartial, status);
-        
-        // Capture provider context
-        if (message.meta && providerId) {
-          setProviderContexts(prev => ({
-            ...prev,
-            [providerId]: { ...(prev[providerId] || {}), ...message.meta }
-          }));
-        }
-        return;
-      }
-
-      
-      
-
-      // Legacy synthesis handler removed: explicit responseType routing handled above
-      // Legacy ensemble_complete handler removed: unified handling via responseType
-
-      // Hidden batch reveal messages - update the unified AI turn
-      if (typeLower.includes('hidden_batch_reveal') || message.type === 'HIDDEN_BATCH_REVEAL') {
-        if (!message.batchResults) return;
-        
-        if (activeAiTurnIdRef.current) {
-          updateAiTurnById(activeAiTurnIdRef.current, aiTurn => {
-            const batchResponses: Record<string, ProviderResponse> = {};
-            Object.entries(message.batchResults).forEach(([providerId, text]: [string, any]) => {
-              batchResponses[providerId] = {
-                providerId,
-                text: typeof text === 'string' ? text : text?.text || '',
-                status: 'completed',
-                createdAt: Date.now(),
-                updatedAt: Date.now()
-              };
-            });
-            
-            return {
-              ...aiTurn,
-              batchResponses: {
-                ...aiTurn.batchResponses,
-                ...batchResponses
-              },
-              hiddenBatchOutputs: {
-                ...aiTurn.hiddenBatchOutputs,
-                ...message.batchResults
-              }
-            };
-          });
-        }
-        return;
-      }
-
-      // Error handling
-      if (typeLower.includes('error') || message.error) {
-        console.error('Workflow error:', message.error || message);
-        setIsLoading(false);
-        const providerId = message.providerId || message.provider;
-        if (providerId) {
-          updateProvider(providerId, `Error: ${message.error || 'Unknown'}`, undefined, false, 'error');
-        }
-        return;
-      }
-    };
-  }
-
-  // Push user turn -> push empty AI turn -> stream into AI turn
   const handleSendPrompt = useCallback(async (prompt: string) => {
+    if (!prompt.trim()) return;
+
     setIsLoading(true);
     setUiPhase('streaming');
     if (showWelcome) setShowWelcome(false);
     setCurrentAppStep('initial');
     setModelsTouched(true);
 
-    const activeProviders = LLM_PROVIDERS_CONFIG.filter((p: LLMProvider) => selectedModels[p.id]);
+    const activeProviders = LLM_PROVIDERS_CONFIG
+      .filter(p => selectedModels[p.id])
+      .map(p => p.id as ProviderKey);
     if (activeProviders.length === 0) {
       setIsLoading(false);
       return;
     }
 
-    // 1. Push user turn
-    const userTurn: UserTurn = {
-      type: 'user',
-      id: `user-${Date.now()}`,
-      text: prompt,
-      createdAt: Date.now(),
-      sessionId: currentSessionId,
+    // 1. Create and persist UserTurn
+    const userTurn: UserTurn = { 
+      type: 'user', 
+      id: `user-${Date.now()}`, 
+      text: prompt, 
+      createdAt: Date.now(), 
+      sessionId: currentSessionId 
     };
-    const baseTimestamp = Date.now();
-    const synthesisTurnId = `ai-synthesis-${baseTimestamp}`;
-    const ensembleTurnId = `ai-ensemble-${baseTimestamp + 1}`;
-    const hiddenBatchTurnId = `ai-hidden-${baseTimestamp + 2}`;
-    
-    setPendingUserTurns(prev => new Map(prev).set(synthesisTurnId, userTurn));
+    const aiTurnId = `ai-${Date.now()}`;
+    setPendingUserTurns(prev => new Map(prev).set(aiTurnId, userTurn));
     setMessages(prev => [...prev, userTurn]);
     
-    // 2. Check if synthesis-first workflow should be used
-    const shouldUseSynthesis = synthesisProvider && activeProviders.length > 1;
-    
-    if (shouldUseSynthesis) {
-      // Create a single unified AI turn that will be progressively filled with all response types
-      const unifiedAiTurn: AiTurn = {
-        type: 'ai',
-        id: synthesisTurnId,
-        createdAt: baseTimestamp,
-        sessionId: currentSessionId,
-        meta: { synthForUserTurnId: userTurn.id },
-        // Initialize all response containers as empty - they'll be filled as data arrives
-        batchResponses: {},
-        synthesisResponses: { [synthesisProvider]: [ { 
-            providerId: synthesisProvider,
-            text: '',
-            status: 'pending',
-            createdAt: baseTimestamp
-          }]
-        },
-        ensembleResponses: {},
-        providerResponses: {
-          [synthesisProvider]: {
-            providerId: synthesisProvider,
-            text: '',
-            status: 'pending',
-            createdAt: baseTimestamp
-          }
-        },
-        hiddenBatchOutputs: {}
-      };
-
-      setMessages(prev => [...prev, unifiedAiTurn]);
-      activeAiTurnIdRef.current = synthesisTurnId;
-
-      try {
-        const handlePortMessage = createPortMessageHandler();
-        handlePortMessageRef.current = handlePortMessage;
-        
-        const useThinking = (selectedModels['chatgpt'] === true) && Boolean(
-          computeThinkFlag({ modeThinkButtonOn: thinkOnChatGPT, input: prompt })
-        );
-
-        // Execute hidden batch + synthesis workflow
-        const { sessionId, port } = api.executeBatchPromptWithSynthesis(
-          prompt,
-          activeProviders,
-          synthesisProvider,
-          isVisibleMode,
-          uiTabId,
-          handlePortMessage,
-          currentSessionId || undefined,
-          useThinking
-        );
-        
-        setCurrentSessionId(sessionId);
-        lastAttachedPortRef.current = port;
-        
-        // Rebind turns to session
-        setMessages(prev => prev.map(t => ({ ...t, sessionId })));
-        setPendingUserTurns(prev => {
-          const newMap = new Map(prev);
-          const pending = newMap.get(synthesisTurnId);
-          if (pending) {
-            newMap.set(synthesisTurnId, { ...pending, sessionId });
-          }
-          return newMap;
-        });
-      } catch (e) {
-        console.error('Failed to start synthesis-first batch prompt:', e);
-        setIsLoading(false);
-        activeAiTurnIdRef.current = null;
-        setPendingUserTurns(prev => {
-          const newMap = new Map(prev);
-          newMap.delete(synthesisTurnId);
-          return newMap;
-        });
-      }
-    } else {
-      // Original workflow: Push empty AI turn with pending providers
-      const aiTurnId = `ai-${Date.now()}`;
-      setPendingUserTurns(prev => new Map(prev).set(aiTurnId, userTurn));
-
-      const pendingProviderResponses: Record<string, ProviderResponse> = {};
-      activeProviders.forEach(provider => {
-        pendingProviderResponses[provider.id] = {
-          providerId: provider.id,
-          text: '',
-          status: 'pending',
-          createdAt: Date.now()
-        };
+    // 2. Build workflow
+    try {
+      const builder = new WorkflowBuilder({ 
+        sessionId: currentSessionId, 
+        targetUserTurnId: userTurn.id, 
+        uiTabId 
       });
+      const shouldUseSynthesis = synthesisProvider && activeProviders.length > 1;
 
-      const aiTurn: AiTurn = {
-        type: 'ai',
-        id: aiTurnId,
-        createdAt: Date.now(),
-        sessionId: currentSessionId,
-        batchResponses: pendingProviderResponses, // Main batch responses container
-        synthesisResponses: {},
-        ensembleResponses: {},
-        providerResponses: pendingProviderResponses // Legacy compatibility
-      };
-      setMessages(prev => [...prev, aiTurn]);
-      activeAiTurnIdRef.current = aiTurnId;
-
-      try {
-        const handlePortMessage = createPortMessageHandler();
-        handlePortMessageRef.current = handlePortMessage;
-        
-        const useThinking = (selectedModels['chatgpt'] === true) && Boolean(
-          computeThinkFlag({ modeThinkButtonOn: thinkOnChatGPT, input: prompt })
-        );
-
-        const { sessionId, port } = api.executeBatchPrompt(
-          prompt,
-          activeProviders,
-          isVisibleMode,
-          uiTabId,
-          handlePortMessage,
-          currentSessionId || undefined,
-          useThinking
-        );
-        
-        setCurrentSessionId(sessionId);
-        lastAttachedPortRef.current = port;
-        
-        // Rebind turns to session
-        setMessages(prev => prev.map(t => ({ ...t, sessionId })));
-        setPendingUserTurns(prev => {
-          const newMap = new Map(prev);
-          const pending = newMap.get(aiTurnId);
-          if (pending) {
-            newMap.set(aiTurnId, { ...pending, sessionId });
-          }
-          return newMap;
+      if (shouldUseSynthesis) {
+        // Synthesis-first workflow: hidden batch + synthesis
+        const batchStepId = builder.addBatchPrompt(prompt, activeProviders, {
+            hidden: true,
+            useThinking: computeThinkFlag({ modeThinkButtonOn: thinkOnChatGPT, input: prompt })
         });
-      } catch (e) {
-        console.error('Failed to start batch prompt:', e);
+        builder.addSynthesis(synthesisProvider as ProviderKey, [batchStepId], prompt,
+            { useThinking: thinkOnChatGPT && synthesisProvider === 'chatgpt' }
+        );
+
+        // Optimistically create unified AI turn
+        const unifiedAiTurn: AiTurn = {
+          type: 'ai', 
+          id: aiTurnId, 
+          createdAt: Date.now(), 
+          sessionId: currentSessionId,
+          meta: { synthForUserTurnId: userTurn.id },
+          batchResponses: {},
+          synthesisResponses: { 
+            [synthesisProvider]: [{ 
+              providerId: synthesisProvider as ProviderKey, 
+              text: '', 
+              status: 'pending', 
+              createdAt: Date.now() 
+            }] 
+          },
+          ensembleResponses: {}
+        };
+        setMessages(prev => [...prev, unifiedAiTurn]);
+
+      } else {
+        // Standard batch workflow
+        builder.addBatchPrompt(prompt, activeProviders, {
+            useThinking: computeThinkFlag({ modeThinkButtonOn: thinkOnChatGPT, input: prompt })
+        });
+
+        // Optimistically create AI turn with pending batch responses
+        const pendingBatch: Record<string, ProviderResponse> = {};
+        activeProviders.forEach(pid => {
+          pendingBatch[pid] = { 
+            providerId: pid, 
+            text: '', 
+            status: 'pending', 
+            createdAt: Date.now() 
+          };
+        });
+        const aiTurn: AiTurn = { 
+          type: 'ai', 
+          id: aiTurnId, 
+          createdAt: Date.now(), 
+          sessionId: currentSessionId, 
+          batchResponses: pendingBatch,
+          synthesisResponses: {},
+          ensembleResponses: {}
+        };
+        setMessages(prev => [...prev, aiTurn]);
+      }
+
+      activeAiTurnIdRef.current = aiTurnId;
+      await api.executeWorkflow(builder.build());
+
+    } catch (error) {
+        console.error('Failed to execute workflow:', error);
         setIsLoading(false);
         activeAiTurnIdRef.current = null;
         setPendingUserTurns(prev => {
@@ -1349,91 +1055,78 @@ const App = () => {
           newMap.delete(aiTurnId);
           return newMap;
         });
-      }
     }
-  }, [selectedModels, showWelcome, currentSessionId, isVisibleMode, uiTabId, createPortMessageHandler, thinkOnChatGPT, synthesisProvider]);
+  }, [selectedModels, showWelcome, currentSessionId, uiTabId, thinkOnChatGPT, synthesisProvider]);
 
   const handleContinuation = useCallback(async (prompt: string) => {
     const trimmed = prompt.trim();
     if (!trimmed || !currentSessionId) return;
-
-    const providerIds = LLM_PROVIDERS_CONFIG.filter((p: LLMProvider) => selectedModels[p.id]).map(p => p.id);
-    if (providerIds.length === 0) return;
-
-    setCurrentAppStep('initial');
+    
     setIsLoading(true);
+    setUiPhase('streaming');
+    setCurrentAppStep('initial');
 
-    // 1. Push user turn
-    const userTurn: UserTurn = {
-      type: 'user',
-      id: `user-${Date.now()}`,
-      text: trimmed,
-      createdAt: Date.now(),
-      sessionId: currentSessionId
+    const activeProviders = LLM_PROVIDERS_CONFIG
+      .filter(p => selectedModels[p.id])
+      .map(p => p.id as ProviderKey);
+    if (activeProviders.length === 0) return;
+
+    const userTurn: UserTurn = { 
+      type: 'user', 
+      id: `user-${Date.now()}`, 
+      text: trimmed, 
+      createdAt: Date.now(), 
+      sessionId: currentSessionId 
     };
     const aiTurnId = `ai-${Date.now()}`;
     setPendingUserTurns(prev => new Map(prev).set(aiTurnId, userTurn));
     setMessages(prev => [...prev, userTurn]);
-
-    // 2. Push empty AI turn
-    const pendingProviderResponses: Record<string, ProviderResponse> = {};
-    providerIds.forEach(pid => {
-      pendingProviderResponses[pid] = {
-        providerId: pid,
-        text: '',
-        status: 'pending',
-        createdAt: Date.now()
-      };
-    });
-
-    const aiTurn: AiTurn = {
-      type: 'ai',
-      id: aiTurnId,
-      createdAt: Date.now(),
-      sessionId: currentSessionId,
-      batchResponses: pendingProviderResponses, // Main batch responses container
-      synthesisResponses: {},
-      ensembleResponses: {},
-      providerResponses: pendingProviderResponses // Legacy compatibility
-    };
-    setMessages(prev => [...prev, aiTurn]);
-    activeAiTurnIdRef.current = aiTurnId;
-
+    
     try {
-      // Set up port message handler for continuation responses
-      const handlePortMessage = createPortMessageHandler();
-      handlePortMessageRef.current = handlePortMessage;
-      
-      // Get the port that will be used for continuation
-      const port = await api.ensurePort({ sessionId: currentSessionId });
-      if (port && handlePortMessageRef.current && lastAttachedPortRef.current !== port) {
-        port.onMessage.addListener(handlePortMessageRef.current);
-        lastAttachedPortRef.current = port;
-      }
-      
-      const useThinking = (selectedModels['chatgpt'] === true) && Boolean(
-        computeThinkFlag({ modeThinkButtonOn: thinkOnChatGPT, input: trimmed })
-      );
+        const builder = new WorkflowBuilder({ 
+          sessionId: currentSessionId, 
+          targetUserTurnId: userTurn.id, 
+          uiTabId 
+        });
+        builder.addBatchPrompt(trimmed, activeProviders, {
+            providerContexts,
+            useThinking: computeThinkFlag({ modeThinkButtonOn: thinkOnChatGPT, input: trimmed })
+        });
 
-      await api.executeContinuationPrompt({
-        prompt: trimmed,
-        providers: providerIds,
-        sessionId: currentSessionId,
-        providerContexts,
-        uiTabId,
-        options: { useThinking }
-      });
-    } catch (e) {
-      console.error('Continuation failed:', e);
-      setIsLoading(false);
-      activeAiTurnIdRef.current = null;
-      setPendingUserTurns(prev => {
-        const newMap = new Map(prev);
-        newMap.delete(aiTurnId);
-        return newMap;
-      });
+        const pendingBatch: Record<string, ProviderResponse> = {};
+        activeProviders.forEach(pid => {
+            pendingBatch[pid] = { 
+              providerId: pid, 
+              text: '', 
+              status: 'pending', 
+              createdAt: Date.now() 
+            };
+        });
+        const aiTurn: AiTurn = { 
+          type: 'ai', 
+          id: aiTurnId, 
+          createdAt: Date.now(), 
+          sessionId: currentSessionId, 
+          batchResponses: pendingBatch,
+          synthesisResponses: {},
+          ensembleResponses: {}
+        };
+        setMessages(prev => [...prev, aiTurn]);
+        
+        activeAiTurnIdRef.current = aiTurnId;
+        await api.executeWorkflow(builder.build());
+
+    } catch (error) {
+        console.error('Continuation workflow failed:', error);
+        setIsLoading(false);
+        activeAiTurnIdRef.current = null;
+        setPendingUserTurns(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(aiTurnId);
+          return newMap;
+        });
     }
-  }, [currentSessionId, selectedModels, providerContexts, uiTabId, createPortMessageHandler]);
+  }, [currentSessionId, selectedModels, providerContexts, uiTabId, thinkOnChatGPT]);
 
   const handleSynthesize = useCallback(async (providerId: string) => {
     // Legacy global synth no longer used; round-level bar handles synthesis
@@ -1470,12 +1163,12 @@ const App = () => {
     setSelectedModels(defaultModels);
   }, []);
 
-  const handleSelectChat = useCallback(async (session: ChatSession) => {
+  const handleSelectChat = useCallback(async (session: HistorySessionSummary) => {
     const sessionId = session.sessionId;
     setCurrentSessionId(sessionId);
     setIsLoading(true);
     try {
-      const s: BackendFullSession = await api.getHistorySession(sessionId) as unknown as BackendFullSession;
+      const s: FullSessionPayload = await api.getHistorySession(sessionId) as unknown as FullSessionPayload;
       const rounds = s?.turns || [];
       const loadedMessages: TurnMessage[] = [];
       rounds.forEach((r: any) => {

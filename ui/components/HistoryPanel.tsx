@@ -1,12 +1,12 @@
 // React import removed
-import { ChatSession } from '../types'; // It only needs to know what a ChatSession looks like.
+import { HistorySessionSummary } from '../types'; // It only needs to know what a HistorySessionSummary looks like.
 
 interface HistoryPanelProps {
   isOpen: boolean;
-  sessions: ChatSession[];
+  sessions: HistorySessionSummary[];
   isLoading: boolean;
   onNewChat: () => void;
-  onSelectChat: (session: ChatSession) => void; // It passes the whole session object up.
+  onSelectChat: (session: HistorySessionSummary) => void; // It passes the whole session object up.
   onDeleteChat: (sessionId: string) => void; // Delete handler provided by parent
 }
 
@@ -83,7 +83,7 @@ const HistoryPanel = ({ isOpen, sessions, isLoading, onNewChat, onSelectChat, on
               sessions
                 .filter(s => s && s.sessionId)
                 .sort((a, b) => (b.lastActivity || b.startTime || 0) - (a.lastActivity || a.startTime || 0))
-                .map((session: ChatSession) => (
+                .map((session: HistorySessionSummary) => (
                 <div
                   key={session.id}
                   onClick={() => onSelectChat(session)} // Pass the whole, typed session object.
