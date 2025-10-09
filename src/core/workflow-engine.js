@@ -28,10 +28,41 @@ ${otherResults}
 Please provide your synthesized response:`;
 }
 
-function buildEnsemblerPrompt(userPrompt, modelOutputsMap) {
-  const entries = Object.entries(modelOutputsMap || {}).filter(([_, t]) => (t || '').trim().length > 0);
-  const modelOutputsBlock = entries
-    .map(([providerId, text]) => `=== ${String(providerId).toUpperCase()} ===\n${String(text)}`)
+function buildEnsemblerPrompt(userPrompt, modelOutputs) {
+  // Normalize input: can be an array of {providerId, text}, a Map(providerId->text/obj), or a plain object
+  const normalized = [];
+
+  const pushNorm = (providerId, value) => {
+    let text = '';
+    if (typeof value === 'string') {
+      text = value;
+    } else if (value && typeof value === 'object') {
+      text = value.text || value.content || '';
+    } else if (Array.isArray(value)) {
+      // If an array of chunks/objects, concatenate string parts
+      text = value.map(v => (typeof v === 'string' ? v : (v?.text || v?.content || ''))).join('\n');
+    }
+    text = String(text || '').trim();
+    if (text.length > 0) normalized.push({ providerId, text });
+  };
+
+  if (Array.isArray(modelOutputs)) {
+    modelOutputs.forEach(item => {
+      if (!item) return;
+      const providerId = item.providerId || 'UNKNOWN';
+      const value = item.text ?? item.content ?? item;
+      pushNorm(providerId, value);
+    });
+  } else if (modelOutputs && typeof modelOutputs.forEach === 'function') {
+    // Likely a Map
+    modelOutputs.forEach((value, providerId) => pushNorm(providerId, value));
+  } else {
+    // Plain object mapping
+    Object.entries(modelOutputs || {}).forEach(([providerId, value]) => pushNorm(providerId, value));
+  }
+
+  const modelOutputsBlock = normalized
+    .map(({ providerId, text }) => `=== ${String(providerId).toUpperCase()} ===\n${String(text)}`)
     .join('\n\n');
 
   return `You are not a synthesizer. You are a mirror that reveals what others cannot see.
@@ -100,20 +131,15 @@ export class WorkflowEngine {
       this.port.postMessage({ type: 'SESSION_STARTED', sessionId: context.sessionId });
     }
 
-    for (const step of steps) {
+    // Group steps by type for proper execution order
+    const promptSteps = steps.filter(step => step.type === 'prompt');
+    const synthesisSteps = steps.filter(step => step.type === 'synthesis');
+    const ensembleSteps = steps.filter(step => step.type === 'ensemble');
+
+    // Execute prompt steps first (sequentially)
+    for (const step of promptSteps) {
       try {
-        let result;
-        switch (step.type) {
-          case 'prompt':
-            result = await this.executePromptStep(step, context);
-            break;
-          case 'synthesis':
-            result = await this.executeSynthesisStep(step, context, stepResults);
-            break;
-          case 'ensemble':
-            result = await this.executeEnsembleStep(step, context, stepResults);
-            break;
-        }
+        const result = await this.executePromptStep(step, context);
         stepResults.set(step.stepId, { status: 'completed', result });
         this.port.postMessage({ type: 'WORKFLOW_STEP_UPDATE', sessionId: context.sessionId, stepId: step.stepId, status: 'completed', result });
       } catch (error) {
@@ -121,6 +147,39 @@ export class WorkflowEngine {
         stepResults.set(step.stepId, { status: 'failed', error: error.message });
         this.port.postMessage({ type: 'WORKFLOW_STEP_UPDATE', sessionId: context.sessionId, stepId: step.stepId, status: 'failed', error: error.message });
         break; // Stop workflow on failure
+      }
+    }
+
+    // Execute synthesis and ensemble steps in parallel (after all prompt steps complete)
+    const parallelSteps = [...synthesisSteps, ...ensembleSteps];
+    if (parallelSteps.length > 0) {
+      const parallelPromises = parallelSteps.map(async (step) => {
+        try {
+          let result;
+          switch (step.type) {
+            case 'synthesis':
+              result = await this.executeSynthesisStep(step, context, stepResults);
+              break;
+            case 'ensemble':
+              result = await this.executeEnsembleStep(step, context, stepResults);
+              break;
+          }
+          stepResults.set(step.stepId, { status: 'completed', result });
+          this.port.postMessage({ type: 'WORKFLOW_STEP_UPDATE', sessionId: context.sessionId, stepId: step.stepId, status: 'completed', result });
+          return { stepId: step.stepId, result };
+        } catch (error) {
+          console.error(`[WorkflowEngine] Step ${step.stepId} failed:`, error);
+          stepResults.set(step.stepId, { status: 'failed', error: error.message });
+          this.port.postMessage({ type: 'WORKFLOW_STEP_UPDATE', sessionId: context.sessionId, stepId: step.stepId, status: 'failed', error: error.message });
+          throw error;
+        }
+      });
+
+      try {
+        await Promise.all(parallelPromises);
+      } catch (error) {
+        console.error('[WorkflowEngine] Parallel step execution failed:', error);
+        // Continue to completion even if some parallel steps failed
       }
     }
     
@@ -139,12 +198,14 @@ export class WorkflowEngine {
         providerContexts,
         onPartial: (providerId, chunk) => {
           const delta = makeDelta(context.sessionId, providerId, chunk);
-          this.port.postMessage({ type: 'PARTIAL_RESULT', sessionId: context.sessionId, stepId: step.stepId, providerId, chunk: delta });
+          this.port.postMessage({ type: 'PARTIAL_RESULT', sessionId: context.sessionId, stepId: step.stepId, providerId, chunk: { text: delta } });
         },
         onAllComplete: (results, errors) => {
           results.forEach((res, pid) => this.sessionManager.updateProviderContext(context.sessionId, pid, res, true, { skipSave: true }));
           this.sessionManager.saveSession(context.sessionId); // Save once at the end of the step
-          resolve({ results, errors });
+          // Normalize Map to plain object for UI
+          const resultsObj = typeof results?.forEach === 'function' ? (() => { const o = {}; results.forEach((v, k) => o[k] = v); return o; })() : (results || {});
+          resolve({ results: resultsObj, errors });
         }
       });
     });
@@ -175,14 +236,27 @@ async resolveSourceData(payload, context, previousResults) {
         }
       
         // Return an array of { providerId, text } objects, filtering out incomplete ones
-        return Object.values(sourceContainer).flat().filter(res => res.status === 'completed' && res.text);
+        return Object.entries(sourceContainer)
+          .flatMap(([providerId, arr]) => (Array.isArray(arr) ? arr : [arr]).map(res => ({ providerId, ...res })))
+          .filter(res => (res.status ? res.status === 'completed' : true) && (res.text || res.content))
+          .map(res => ({ providerId: res.providerId, text: res.text || res.content }));
 
     } else if (payload.sourceStepIds) {
-        // ... existing logic is fine ...
-        return payload.sourceStepIds.flatMap(id => 
-            Array.from(previousResults.get(id)?.result?.results?.values() || [])
-        // This part also needs a fix to check status, not 'ok'
-        ).filter(res => res.status === 'completed' && res.text);
+        // Gather results from specified prior steps
+        const gathered = [];
+        for (const id of payload.sourceStepIds) {
+          const prior = previousResults.get(id)?.result?.results;
+          if (prior && typeof prior.forEach === 'function') {
+            prior.forEach((res, providerId) => {
+              const text = res?.text || res?.content || '';
+              const statusOk = res?.status ? res.status === 'completed' : true;
+              if (statusOk && text && text.trim().length > 0) {
+                gathered.push({ providerId, text });
+              }
+            });
+          }
+        }
+        return gathered;
     }
     throw new Error('No valid source specified for step.');
 }
@@ -196,18 +270,24 @@ async resolveSourceData(payload, context, previousResults) {
     const synthPrompt = buildSynthesisPrompt(payload.originalPrompt, sourceData, payload.synthesisProvider);
 
     return new Promise((resolve) => {
+      // Get provider context to continue in same chat
+      const allContexts = this.sessionManager.getProviderContexts(context.sessionId) || {};
+      const providerContext = allContexts[payload.synthesisProvider] || {};
+      
       this.orchestrator.executeParallelFanout(synthPrompt, [payload.synthesisProvider], {
         sessionId: context.sessionId,
         useThinking: payload.useThinking,
+        providerContexts: { [payload.synthesisProvider]: providerContext }, // Continue in same chat context
         onPartial: (providerId, chunk) => {
           const delta = makeDelta(context.sessionId, providerId, chunk);
-          this.port.postMessage({ type: 'PARTIAL_RESULT', sessionId: context.sessionId, stepId: step.stepId, providerId, chunk: delta });
+          this.port.postMessage({ type: 'PARTIAL_RESULT', sessionId: context.sessionId, stepId: step.stepId, providerId, chunk: { text: delta } });
         },
         onAllComplete: (results) => {
           const finalResult = results.get(payload.synthesisProvider);
           this.sessionManager.updateProviderContext(context.sessionId, payload.synthesisProvider, finalResult, true, { skipSave: true });
           this.sessionManager.saveSession(context.sessionId);
-          resolve(finalResult);
+          // Return normalized results object keyed by provider for UI consumption
+          resolve({ results: { [payload.synthesisProvider]: finalResult } });
         }
       });
     });
@@ -226,25 +306,23 @@ async resolveSourceData(payload, context, previousResults) {
         sessionId: context.sessionId,
         useThinking: payload.useThinking,
         onPartial: (providerId, chunk) => {
-          if (chunk && chunk.partial) {
-            const delta = makeDelta(context.sessionId, providerId, chunk.text || "");
-            if (delta) {
-              this.port.postMessage({ 
-                type: 'PARTIAL_RESULT', 
-                sessionId: context.sessionId, 
-                stepId: step.stepId, 
-                providerId, 
-                text: delta,
-                partial: true 
-              });
-            }
+          const delta = makeDelta(context.sessionId, providerId, (chunk && chunk.text) || chunk);
+          if (delta) {
+            this.port.postMessage({ 
+              type: 'PARTIAL_RESULT', 
+              sessionId: context.sessionId, 
+              stepId: step.stepId, 
+              providerId, 
+              chunk: { text: delta },
+            });
           }
         },
         onAllComplete: (results) => {
             const finalResult = results.get(payload.ensembleProvider);
             this.sessionManager.updateProviderContext(context.sessionId, payload.ensembleProvider, finalResult, true, { skipSave: true });
             this.sessionManager.saveSession(context.sessionId);
-            resolve(finalResult);
+            // Return normalized results object keyed by provider for UI consumption
+            resolve({ results: { [payload.ensembleProvider]: finalResult } });
         }
       });
     });

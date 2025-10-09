@@ -46,7 +46,7 @@ Load the extension in Chrome (dev)
   - Enable Developer mode
   - Load unpacked → select the dist directory
 - The service worker (dist/bg.js) will create a persistent offscreen document (dist/offscreen.html). The content script (dist/cs-openai.js) runs on openai.com domains.
-- The UI is built to dist/ui/index.html (not wired as a default_popup). You can open it directly via the extension’s “Details” → “View in Chrome Web Store” link replacement or by navigating to chrome-extension://<EXT_ID>/ui/index.html.
+- The UI is built to dist/ui/index.html (not wired as a default_popup). You can open it directly via the extension's “Details” → “View in Chrome Web Store” link replacement or by navigating to chrome-extension://<EXT_ID>/ui/index.html.
 
 High-level architecture (big picture)
 1) Build and outputs (esbuild)

@@ -13,7 +13,7 @@ import {
 } from "../../shared/messaging";
 
 import type { HistorySessionSummary, HistoryApiResponse } from "../types";
-import type { WorkflowRequest } from "../../shared/contract";
+import type { ExecuteWorkflowRequest } from "../../shared/contract";
 
 interface BackendApiResponse<T> {
   success: boolean;
@@ -101,15 +101,15 @@ const api = {
    * The primary method for executing all AI-related tasks.
    * Constructs a workflow and sends it to the backend's WorkflowEngine.
    */
-  async executeWorkflow(workflow: WorkflowRequest): Promise<void> {
-    const port = await this.ensurePort({ sessionId: workflow.context.sessionId });
+  async executeWorkflow(request: ExecuteWorkflowRequest): Promise<void> {
+    const port = await this.ensurePort({ sessionId: request.sessionId });
     
+    // Send high-level request - backend will compile it
     port.postMessage({
       type: EXECUTE_WORKFLOW,
-      payload: workflow
+      payload: request
     });
-    
-    console.log(`[API] Dispatched workflow: ${workflow.workflowId} for session: ${workflow.context.sessionId}`);
+    console.log(`[API] Dispatched request mode: ${request.mode} for session: ${request.sessionId}`);
   },
 
   /**

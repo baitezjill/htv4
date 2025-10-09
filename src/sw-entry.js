@@ -8,6 +8,7 @@ import {
   HTOSRequestLifecycleManager,
   utils,
 } from "./core/vendor-exports.js";
+import { WorkflowCompiler } from "./core/workflow-compiler.js";
 import { SWBootstrap } from "./HTOS/ServiceWorkerBootstrap.js";
 import { ClaudeAdapter } from "./providers/claude-adapter.js";
 import { GeminiAdapter } from "./providers/gemini-adapter.js";
@@ -151,6 +152,7 @@ class SessionManager {
   }
 }
 const sessionManager = new SessionManager();
+const workflowCompiler = new WorkflowCompiler(sessionManager);
 
 // =============================================================================
 // PROVIDER ADAPTER REGISTRY
@@ -243,13 +245,8 @@ chrome.runtime.onConnect.addListener((port) => {
   if (port.name === "htos-popup") {
     console.log("[SW] New UI Port connected:", port.sender?.tab?.id);
 
-    // 1. Instantiate a new WorkflowEngine FOR THIS SPECIFIC CONNECTION.
-    //    It uses singleton services (orchestrator, sessionManager) and the port for communication.
-    const workflowEngine = new WorkflowEngine(
-      self.faultTolerantOrchestrator,
-      sessionManager,
-      port
-    );
+    // Defer engine instantiation until core is ready to avoid undefined orchestrator
+    let workflowEngine = null;
 
     // 2. Add the new, simplified message listener. This is the ONLY entry point for AI work.
     port.onMessage.addListener(async (message) => {
@@ -258,10 +255,32 @@ chrome.runtime.onConnect.addListener((port) => {
       console.log(`[SW] Received message of type: ${message.type}`);
       switch (message.type) {
         // THE SINGLE entry point for all new AI workflows.
-        case 'EXECUTE_WORKFLOW':
-          // The engine now handles everything. No more complex logic here.
-          await workflowEngine.execute(message.payload); // payload is the WorkflowRequest
+        case 'EXECUTE_WORKFLOW': {
+          try {
+            // BEFORE: UI sent a pre-built WorkflowRequest
+            // const workflowRequest = message.payload;
+
+            // AFTER: UI sends high-level ExecuteWorkflowRequest
+            const executeRequest = message.payload;
+
+            // Compile it to a detailed WorkflowRequest
+            const workflowRequest = workflowCompiler.compile(executeRequest);
+
+            // Execute via engine
+            await workflowEngine.execute(workflowRequest);
+
+          } catch (error) {
+            console.error('[SW] Workflow execution failed:', error);
+            port.postMessage({
+              type: 'WORKFLOW_STEP_UPDATE',
+              sessionId: message.payload.sessionId,
+              stepId: 'compilation',
+              status: 'failed',
+              error: error.message
+            });
+          }
           break;
+        }
 
         // Ancillary handlers that are NOT part of the AI workflow execution.
         case 'reconnect':
@@ -409,9 +428,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // =============================================================================
 (async () => {
   try {
-    await initializeGlobalInfrastructure();
-    await initializeProviders();
-    await initializeOrchestrator();
+    // Expose a readiness promise so other handlers can await core init
+    self.__SW_READY = (async () => {
+      await initializeGlobalInfrastructure();
+      await initializeProviders();
+      await initializeOrchestrator();
+    })();
+    await self.__SW_READY;
     SWBootstrap.init();
     console.log("[SW] 🚀 Bootstrap complete. System ready.");
   } catch (e) {

@@ -16,8 +16,7 @@ import { useDelegatedScroll } from './hooks/useDelegatedScroll';
 import Banner from './components/Banner';
 import { StreamingBuffer } from './utils/streamingBuffer';
 import ComposerMode from './components/composer/ComposerMode';
-import { WorkflowBuilder } from './services/workflow-builder';
-import { ProviderKey } from '../shared/contract';
+import { ProviderKey, ExecuteWorkflowRequest } from '../shared/contract';
 
 // buildEnsemblerPrompt has been moved to the backend (workflow-engine.js)
 
@@ -432,24 +431,23 @@ const App = () => {
     isSynthRunningRef.current = true;
 
     try {
-      const builder = new WorkflowBuilder({ 
-        sessionId: currentSessionId, 
-        targetUserTurnId: userTurnId, 
-        uiTabId 
-      });
-      selected.forEach(provider => {
-    builder.addSynthesisRerun(
-      provider as ProviderKey,
-      userTurnId, // This is the historicalTurnId the backend will resolve
-      roundInfo.user.text || '',
-      { useThinking: !!thinkSynthByRound[userTurnId] && provider === 'chatgpt' }
-    );
-  });
+      // Unified request for rerun synthesis
+      const request: ExecuteWorkflowRequest = {
+        sessionId: currentSessionId,
+        threadId: 'default-thread',
+        mode: 'rerun-synthesis',
+        payload: {
+          historicalTurnId: userTurnId,
+          providers: selected as ProviderKey[],
+          originalPrompt: roundInfo.user.text || '',
+          useThinking: !!thinkSynthByRound[userTurnId]
+        }
+      };
 
-  if (selected.length === 1) {
-    setLastSynthesisModel(selected[0]);
-  }
-  await api.executeWorkflow(builder.build());
+      if (selected.length === 1) {
+        setLastSynthesisModel(selected[0]);
+      }
+      await api.executeWorkflow(request);
     } catch (err) {
       console.error('Synthesis run failed:', err);
       setIsLoading(false);
@@ -496,19 +494,20 @@ const App = () => {
     activeAiTurnIdRef.current = roundAi.id;
 
     try {
-      const builder = new WorkflowBuilder({ 
-        sessionId: currentSessionId, 
-        targetUserTurnId: userTurnId, 
-        uiTabId 
-      });
-       builder.addEnsembleRerun(
-    ensemblerProvider as ProviderKey,
-    userTurnId, // This is the historicalTurnId
-    roundUser.text || '',
-    { useThinking: (ensemblerProvider === 'chatgpt') ? !!thinkEnsembleByRound[userTurnId] : false }
-  );
+      // Unified request for rerun ensemble
+      const request: ExecuteWorkflowRequest = {
+        sessionId: currentSessionId,
+        threadId: 'default-thread',
+        mode: 'rerun-ensemble',
+        payload: {
+          historicalTurnId: userTurnId,
+          provider: ensemblerProvider as ProviderKey,
+          originalPrompt: roundUser.text || '',
+          useThinking: (ensemblerProvider === 'chatgpt') ? !!thinkEnsembleByRound[userTurnId] : false
+        }
+      };
 
-  await api.executeWorkflow(builder.build());
+      await api.executeWorkflow(request);
     } catch (err) {
       console.error('Ensemble run failed:', err);
       setIsLoading(false);
@@ -976,26 +975,30 @@ const App = () => {
     setPendingUserTurns(prev => new Map(prev).set(aiTurnId, userTurn));
     setMessages(prev => [...prev, userTurn]);
     
-    // 2. Build workflow
+    // 2. Build workflow using declarative ExecuteWorkflowRequest
     try {
-      const builder = new WorkflowBuilder({ 
-        sessionId: currentSessionId, 
-        targetUserTurnId: userTurn.id, 
-        uiTabId 
-      });
       const shouldUseSynthesis = synthesisProvider && activeProviders.length > 1;
+      
+      // Unified request for a new message
+      const request: ExecuteWorkflowRequest = {
+        sessionId: currentSessionId || 'new-session',
+        threadId: 'default-thread',
+        mode: 'new-message',
+        payload: {
+          userMessage: prompt,
+          providers: activeProviders,
+          synthesis: shouldUseSynthesis ? {
+            enabled: true,
+            provider: synthesisProvider as ProviderKey,
+            strategy: 'fresh'
+          } : undefined,
+          useThinking: computeThinkFlag({ modeThinkButtonOn: thinkOnChatGPT, input: prompt })
+        }
+      };
 
       if (shouldUseSynthesis) {
-        // Synthesis-first workflow: hidden batch + synthesis
-        const batchStepId = builder.addBatchPrompt(prompt, activeProviders, {
-            hidden: true,
-            useThinking: computeThinkFlag({ modeThinkButtonOn: thinkOnChatGPT, input: prompt })
-        });
-        builder.addSynthesis(synthesisProvider as ProviderKey, [batchStepId], prompt,
-            { useThinking: thinkOnChatGPT && synthesisProvider === 'chatgpt' }
-        );
-
-        // Optimistically create unified AI turn
+        // Optimistically create unified AI turn with both synthesis and ensemble
+        const ensembleProvider = synthesisProvider === 'chatgpt' ? 'claude' : 'chatgpt';
         const unifiedAiTurn: AiTurn = {
           type: 'ai', 
           id: aiTurnId, 
@@ -1011,17 +1014,18 @@ const App = () => {
               createdAt: Date.now() 
             }] 
           },
-          ensembleResponses: {}
+          ensembleResponses: {
+            [ensembleProvider]: [{ 
+              providerId: ensembleProvider as ProviderKey, 
+              text: '', 
+              status: 'pending', 
+              createdAt: Date.now() 
+            }] 
+          }
         };
         setMessages(prev => [...prev, unifiedAiTurn]);
-
       } else {
-        // Standard batch workflow
-        builder.addBatchPrompt(prompt, activeProviders, {
-            useThinking: computeThinkFlag({ modeThinkButtonOn: thinkOnChatGPT, input: prompt })
-        });
-
-        // Optimistically create AI turn with pending batch responses
+        // Standard batch workflow - optimistically create AI turn with pending batch responses
         const pendingBatch: Record<string, ProviderResponse> = {};
         activeProviders.forEach(pid => {
           pendingBatch[pid] = { 
@@ -1044,7 +1048,7 @@ const App = () => {
       }
 
       activeAiTurnIdRef.current = aiTurnId;
-      await api.executeWorkflow(builder.build());
+      await api.executeWorkflow(request);
 
     } catch (error) {
         console.error('Failed to execute workflow:', error);
@@ -1083,15 +1087,17 @@ const App = () => {
     setMessages(prev => [...prev, userTurn]);
     
     try {
-        const builder = new WorkflowBuilder({ 
-          sessionId: currentSessionId, 
-          targetUserTurnId: userTurn.id, 
-          uiTabId 
-        });
-        builder.addBatchPrompt(trimmed, activeProviders, {
-            providerContexts,
+        // Unified request for continuation
+        const request: ExecuteWorkflowRequest = {
+          sessionId: currentSessionId,
+          threadId: 'default-thread',
+          mode: 'continuation',
+          payload: {
+            userMessage: trimmed,
+            providers: activeProviders,
             useThinking: computeThinkFlag({ modeThinkButtonOn: thinkOnChatGPT, input: trimmed })
-        });
+          }
+        };
 
         const pendingBatch: Record<string, ProviderResponse> = {};
         activeProviders.forEach(pid => {
@@ -1114,7 +1120,7 @@ const App = () => {
         setMessages(prev => [...prev, aiTurn]);
         
         activeAiTurnIdRef.current = aiTurnId;
-        await api.executeWorkflow(builder.build());
+        await api.executeWorkflow(request);
 
     } catch (error) {
         console.error('Continuation workflow failed:', error);

@@ -29,10 +29,9 @@ const AiTurnBlock: React.FC<AiTurnBlockProps> = ({
 }) => {
   // Local UI state
   const [showSynthesisCollapse, setShowSynthesisCollapse] = useState(false);
+  const [showEnsembleCollapse, setShowEnsembleCollapse] = useState(false);
 
-  // Read response data directly from the unified aiTurn object
-  const batchResponses = useMemo(() => aiTurn.batchResponses || {}, [aiTurn.batchResponses]);
-  // Normalize synthesis/ensemble maps to arrays per provider for multi-take support
+  // Prepare primary content (synthesis and ensemble)
   const synthesisResponses = useMemo(() => {
     const map = aiTurn.synthesisResponses || {};
     const out: Record<string, ProviderResponse[]> = {};
@@ -41,6 +40,7 @@ const AiTurnBlock: React.FC<AiTurnBlockProps> = ({
     });
     return out;
   }, [aiTurn.synthesisResponses]);
+
   const ensembleResponses = useMemo(() => {
     const map = aiTurn.ensembleResponses || {};
     const out: Record<string, ProviderResponse[]> = {};
@@ -50,14 +50,15 @@ const AiTurnBlock: React.FC<AiTurnBlockProps> = ({
     return out;
   }, [aiTurn.ensembleResponses]);
 
-  // Merge batch responses with hidden batch outputs for display
-  const mergedBatchOutputs = useMemo(() => {
-    const merged = { ...batchResponses };
+  // Prepare source content (combine batch and hidden outputs)
+  const allSources = useMemo(() => {
+    const sources = { ...(aiTurn.batchResponses || {}) };
     
+    // Add hidden batch outputs to sources
     if (aiTurn.hiddenBatchOutputs) {
       Object.entries(aiTurn.hiddenBatchOutputs).forEach(([providerId, text]) => {
-        if (!merged[providerId]) {
-          merged[providerId] = {
+        if (!sources[providerId]) {
+          sources[providerId] = {
             providerId,
             text: typeof text === 'string' ? text : text?.text || '',
             status: 'completed' as const,
@@ -68,18 +69,20 @@ const AiTurnBlock: React.FC<AiTurnBlockProps> = ({
       });
     }
     
-    return merged;
-  }, [batchResponses, aiTurn.hiddenBatchOutputs]);
+    return sources;
+  }, [aiTurn.batchResponses, aiTurn.hiddenBatchOutputs]);
 
-  // Determine what sections to show based on available data
-  const shouldShowBatchResponses = Object.keys(mergedBatchOutputs).length > 0;
-  const shouldShowSynthesisResponses = Object.keys(synthesisResponses).length > 0;
-  const shouldShowEnsembleResponses = Object.keys(ensembleResponses).length > 0;
+  // Simple boolean checks for what to display
+  const hasSynthesis = Object.keys(synthesisResponses).length > 0;
+  const hasEnsemble = Object.keys(ensembleResponses).length > 0;
+  const hasSources = Object.keys(allSources).length > 0;
+  const hasPrimaryContent = hasSynthesis || hasEnsemble;
 
-  // Determine header text based on available responses
+  // Determine header text
   const getHeaderText = () => {
-    if (shouldShowEnsembleResponses) return "Ensemble Answer";
-    if (shouldShowSynthesisResponses) return "Synthesis";
+    if (hasEnsemble && hasSynthesis) return "AI Response";
+    if (hasEnsemble) return "Ensemble Answer";
+    if (hasSynthesis) return "Synthesis";
     return "AI Response";
   };
 
@@ -90,103 +93,201 @@ const AiTurnBlock: React.FC<AiTurnBlockProps> = ({
         <h3>{getHeaderText()}</h3>
       </div>
 
-      {/* Flexible Layout Container */}
       <div className="ai-turn-content">
-        {/* Top Row: Synthesis and Ensemble side-by-side */}
-        {(shouldShowSynthesisResponses || shouldShowEnsembleResponses) && (
-          <div className="synthesis-ensemble-row" style={{ 
-            display: 'flex', 
-            gap: '16px', 
-            marginBottom: shouldShowBatchResponses ? '24px' : '0'
-          }}>
-            {/* Synthesis Section */}
-            {shouldShowSynthesisResponses && (
-              <div className="synthesis-section" style={{ flex: 1 }}>
-                <div className="section-header">
-                  <h4>Synthesis</h4>
-                  <button 
-                    onClick={() => setShowSynthesisCollapse(!showSynthesisCollapse)}
-                    className="collapse-button"
-                  >
-                    {showSynthesisCollapse ? '▼' : '▶'}
-                  </button>
-                </div>
-                {!showSynthesisCollapse && (
-                  <div className="synthesis-content">
-                    {Object.entries(synthesisResponses).flatMap(([pid, responses]) => (
-                      responses.map((response, index) => (
-                        <div key={`synthesis-${pid}-${index}`} className="provider-response">
-                          <div className="provider-header">
-                            <span className="provider-name">{response.providerId || pid}</span>
-                            <span className="provider-status">{response.status}</span>
-                          </div>
-                          <div className="response-text">{response.text}</div>
-                        </div>
-                      ))
-                    ))}
+        {/* Primary Content: Synthesis and Ensemble side-by-side */}
+        {hasPrimaryContent && (
+          <div className="primary-content-section">
+            <div className="synthesis-ensemble-row" style={{ 
+              display: 'flex', 
+              gap: '16px',
+              marginBottom: '16px'
+            }}>
+              {/* Synthesis Section */}
+              {hasSynthesis && (
+                <div className="synthesis-section" style={{ 
+                  flex: hasEnsemble ? 1 : 2,
+                  border: '1px solid #e1e5e9',
+                  borderRadius: '8px',
+                  padding: '16px'
+                }}>
+                  <div className="section-header" style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center',
+                    marginBottom: '12px'
+                  }}>
+                    <h4 style={{ margin: 0, fontSize: '16px', fontWeight: '600' }}>Synthesis</h4>
+                    <button 
+                      onClick={() => setShowSynthesisCollapse(!showSynthesisCollapse)}
+                      className="collapse-button"
+                      style={{ 
+                        background: 'none', 
+                        border: 'none', 
+                        cursor: 'pointer',
+                        fontSize: '12px'
+                      }}
+                    >
+                      {showSynthesisCollapse ? '▼' : '▶'}
+                    </button>
                   </div>
-                )}
-              </div>
-            )}
+                  {!showSynthesisCollapse && (
+                    <div className="synthesis-content">
+                      {Object.entries(synthesisResponses).flatMap(([pid, responses]) => (
+                        responses.map((response, index) => (
+                          <div key={`synthesis-${pid}-${index}`} className="provider-response" style={{ marginBottom: '12px' }}>
+                            <div className="provider-header" style={{ 
+                              display: 'flex', 
+                              justifyContent: 'space-between', 
+                              marginBottom: '8px',
+                              fontSize: '12px',
+                              color: '#666'
+                            }}>
+                              <span className="provider-name">{response.providerId || pid}</span>
+                              <span className="provider-status">{response.status}</span>
+                            </div>
+                            <div className="response-text" style={{ 
+                              whiteSpace: 'pre-wrap',
+                              lineHeight: '1.5'
+                            }}>
+                              {response.text}
+                            </div>
+                          </div>
+                        ))
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
-            {/* Ensemble Section */}
-            {shouldShowEnsembleResponses && (
-              <div className="ensemble-section" style={{ flex: 1 }}>
-                <div className="section-header">
-                  <h4>Ensemble</h4>
+              {/* Ensemble Section */}
+              {hasEnsemble && (
+                <div className="ensemble-section" style={{ 
+                  flex: hasSynthesis ? 1 : 2,
+                  border: '1px solid #e1e5e9',
+                  borderRadius: '8px',
+                  padding: '16px'
+                }}>
+                  <div className="section-header" style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center',
+                    marginBottom: '12px'
+                  }}>
+                    <h4 style={{ margin: 0, fontSize: '16px', fontWeight: '600' }}>Ensemble</h4>
+                    <button 
+                      onClick={() => setShowEnsembleCollapse(!showEnsembleCollapse)}
+                      className="collapse-button"
+                      style={{ 
+                        background: 'none', 
+                        border: 'none', 
+                        cursor: 'pointer',
+                        fontSize: '12px'
+                      }}
+                    >
+                      {showEnsembleCollapse ? '▼' : '▶'}
+                    </button>
+                  </div>
+                  {!showEnsembleCollapse && (
+                    <div className="ensemble-content">
+                      {Object.entries(ensembleResponses).flatMap(([pid, responses]) => (
+                        responses.map((response, index) => (
+                          <div key={`ensemble-${pid}-${index}`} className="provider-response" style={{ marginBottom: '12px' }}>
+                            <div className="provider-header" style={{ 
+                              display: 'flex', 
+                              justifyContent: 'space-between', 
+                              marginBottom: '8px',
+                              fontSize: '12px',
+                              color: '#666'
+                            }}>
+                              <span className="provider-name">{response.providerId || pid}</span>
+                              <span className="provider-status">{response.status}</span>
+                            </div>
+                            <div className="response-text" style={{ 
+                              whiteSpace: 'pre-wrap',
+                              lineHeight: '1.5'
+                            }}>
+                              {response.text}
+                            </div>
+                          </div>
+                        ))
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <div className="ensemble-content">
-                  {Object.entries(ensembleResponses).flatMap(([pid, responses]) => (
-                    responses.map((response, index) => (
-                      <div key={`ensemble-${pid}-${index}`} className="provider-response">
-                        <div className="provider-header">
-                          <span className="provider-name">{response.providerId || pid}</span>
-                          <span className="provider-status">{response.status}</span>
-                        </div>
-                        <div className="response-text">{response.text}</div>
-                      </div>
-                    ))
-                  ))}
-                </div>
+              )}
+            </div>
+
+            {/* Sources Toggle - appears under primary content */}
+            {hasSources && (
+              <div className="sources-toggle-section" style={{ 
+                textAlign: 'center',
+                marginBottom: '16px'
+              }}>
+                <button 
+                  onClick={() => onToggleSourceOutputs?.()}
+                  className="toggle-button"
+                  style={{
+                    padding: '8px 16px',
+                    backgroundColor: '#f8f9fa',
+                    border: '1px solid #dee2e6',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '14px'
+                  }}
+                >
+                  {showSourceOutputs ? 'Hide Sources' : 'Show Sources'}
+                </button>
               </div>
             )}
           </div>
         )}
 
-        {/* Bottom Section: Batch Outputs (Sources) */}
-        {shouldShowBatchResponses && (
-          <div className="batch-section">
-            <div className="section-header">
-              <h4>Sources</h4>
-              <button 
-                onClick={() => onToggleSourceOutputs?.()}
-                className="toggle-button"
-              >
-                {showSourceOutputs ? 'Hide Sources' : 'Show Sources'}
-              </button>
+        {/* Source Content: Batch Outputs */}
+        {hasSources && showSourceOutputs && (
+          <div className="source-content-section">
+            <div className="sources-header" style={{ 
+              marginBottom: '12px',
+              paddingBottom: '8px',
+              borderBottom: '1px solid #e1e5e9'
+            }}>
+              <h4 style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: '#666' }}>Sources</h4>
             </div>
-            {showSourceOutputs && (
-              <div className="batch-content">
-                <ProviderResponseBlock
-                  providerResponses={mergedBatchOutputs}
-                  isLoading={isLoading}
-                  currentAppStep={currentAppStep as AppStep}
-                  isReducedMotion={isReducedMotion}
-                />
-              </div>
-            )}
+            <div className="sources-content">
+              <ProviderResponseBlock
+                providerResponses={allSources}
+                isLoading={isLoading}
+                currentAppStep={currentAppStep as AppStep}
+                isReducedMotion={isReducedMotion}
+              />
+            </div>
           </div>
         )}
 
         {/* Composer Mode Entry Button */}
-        <div className="composer-entry">
-          <button 
-            onClick={() => onEnterComposerMode?.(aiTurn)}
-            className="composer-button"
-          >
-            Open in Composer
-          </button>
-        </div>
+        {hasComposableContent(aiTurn) && (
+          <div className="composer-entry" style={{ 
+            textAlign: 'center',
+            marginTop: '16px',
+            paddingTop: '16px',
+            borderTop: '1px solid #e1e5e9'
+          }}>
+            <button 
+              onClick={() => onEnterComposerMode?.(aiTurn)}
+              className="composer-button"
+              style={{
+                padding: '8px 16px',
+                backgroundColor: '#007bff',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '14px'
+              }}
+            >
+              Open in Composer
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
